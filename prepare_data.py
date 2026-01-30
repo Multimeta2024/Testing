@@ -78,7 +78,7 @@ class DataPreparer:
         possible_masks = [
             self.mask_folder / f"{image_stem}.png",
             self.mask_folder / f"{image_stem}_mask.png",
-            self.mask_folder / f"{image_stem}.PNG",
+            self.mask_folder / f"{image_stem}_mask_0.png",
             self.mask_folder / f"{image_stem}_mask.PNG",
         ]
         
@@ -208,6 +208,8 @@ class DataPreparer:
     
     def save_labels(self, labels: List[Tuple], output_file: str = 'labels.json'):
         """Save labels to JSON file"""
+        output_dir = Path('/kaggle/working')
+        output_dir.mkdir(exist_ok=True)
         output_path = self.dataset_root / output_file
         
         labels_dict = {
@@ -232,7 +234,7 @@ class DataPreparer:
     
     def save_labels_txt(self, labels: List[Tuple], output_file: str = 'labels.txt'):
         """Save labels to simple text file (one per line)"""
-        output_path = self.dataset_root / output_file
+        output_path = Path('/kaggle/working') / output_file
         
         with open(output_path, 'w') as f:
             for img_path, label, mask_path in labels:
@@ -326,8 +328,8 @@ def prepare_dataset(dataset_root: str,
         preparer.verify_masks(num_samples=5)
     
     # Save labels
-    preparer.save_labels(labels, 'labels.json')
-    preparer.save_labels_txt(labels, 'labels.txt')
+    # preparer.save_labels(labels, 'labels.json')
+    # preparer.save_labels_txt(labels, 'labels.txt')
     
     print("\n✅ Dataset preparation complete!")
     print(f"✅ Ready to use with {len(labels)} images")

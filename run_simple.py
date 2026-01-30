@@ -33,45 +33,6 @@ history, model_path = train_from_folders(
 
 print(f"\n✅ Model trained and saved to: {model_path}/best.pth")
 
-# ============================================================================
-# STEP 3: TEST ON A SINGLE IMAGE
-# ============================================================================
-
-# from inference import HybridImagePredictor
-
-# print("\nStep 3: Testing on an image...")
-
-# # Load the trained model
-# predictor = HybridImagePredictor(
-#     model_path=f'{model_path}/best.pth',
-#     use_lite_model=True  # Must match what you trained
-# )
-
-# # Test on a hybrid image (change this path)
-# test_image = 'path/to/test/image.jpg'
-
-# try:
-#     result = predictor.predict(test_image)
-    
-#     print("\n" + "="*60)
-#     print("PREDICTION RESULT")
-#     print("="*60)
-#     print(f"Image: {test_image}")
-#     print(f"Prediction: {result['prediction']}")
-#     print(f"Confidence: {result['confidence']:.2%}")
-#     print(f"Hybrid Probability: {result['probability']:.2%}")
-#     print("="*60)
-    
-#     # Visualize
-#     predictor.visualize_prediction(
-#         test_image,
-#         save_path='test_result.png'
-#     )
-#     print("\n✅ Visualization saved to: test_result.png")
-    
-# except Exception as e:
-#     print(f"\n⚠️  Could not test on image: {e}")
-#     print("   Please provide a valid test image path above")
 
 # ============================================================================
 # DONE!

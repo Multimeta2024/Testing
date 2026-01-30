@@ -1,0 +1,30 @@
+Prepare your dataset
+    Your folder structure should be:
+    my_dataset/
+    ├── real/
+    │   ├── img1.jpg
+    │   ├── img2.jpg
+    │   └── ...
+    ├── hybrid/
+    │   ├── img1.jpg
+    │   ├── img2.jpg
+    │   └── ...
+    └── masks/
+        ├── img1.png
+        ├── img2.png
+        └── ..."""
+no masks also no problem
+
+
+In the prepare data.py
+- if want first run this file it is check whether the the folder structure are good to check that run this
+- the prepare data will also run on the train script also but usually run it first
+- change input path in prepare data code 
+
+To train simple version first run - run run_simple.py
+- change the dataset path and save dir in train_simple.py in train_folders function
+
+train_simple.py
+- it is used for higher epochs after simple run it
+- while running this always look for and change the save_dir in config
+

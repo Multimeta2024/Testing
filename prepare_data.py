@@ -200,43 +200,6 @@ class DataPreparer:
         if checked == 0:
             print("   ⚠️  No masks found to verify")
     
-    def save_labels(self, labels: List[Tuple], output_file: str = 'labels.json'):
-        """Save labels to JSON file"""
-        output_dir = Path('/kaggle/working')
-        output_dir.mkdir(exist_ok=True)
-        output_path = self.dataset_root / output_file
-        
-        labels_dict = {
-            'dataset_root': str(self.dataset_root),
-            'total_images': len(labels),
-            'labels': [
-                {
-                    'image_path': img_path,
-                    'label': label,
-                    'label_name': 'real' if label == 0 else 'hybrid',
-                    'mask_path': mask_path
-                }
-                for img_path, label, mask_path in labels
-            ]
-        }
-        
-        with open(output_path, 'w') as f:
-            json.dump(labels_dict, f, indent=2)
-        
-        print(f"\n💾 Labels saved to: {output_path}")
-        return output_path
-    
-    def save_labels_txt(self, labels: List[Tuple], output_file: str = 'labels.txt'):
-        """Save labels to simple text file (one per line)"""
-        output_path = Path('/kaggle/working') / output_file
-        
-        with open(output_path, 'w') as f:
-            for img_path, label, mask_path in labels:
-                mask_str = mask_path if mask_path else 'None'
-                f.write(f"{img_path}\t{label}\t{mask_str}\n")
-        
-        print(f"💾 Labels saved to: {output_path}")
-        return output_path
     
     def print_statistics(self, stats: dict):
         """Print dataset statistics"""
@@ -321,9 +284,7 @@ def prepare_dataset(dataset_root: str,
     if verify_masks and preparer.mask_folder:
         preparer.verify_masks(num_samples=5)
     
-    # Save labels
-    # preparer.save_labels(labels, 'labels.json')
-    # preparer.save_labels_txt(labels, 'labels.txt')
+    
     
     print("\n✅ Dataset preparation complete!")
     print(f"✅ Ready to use with {len(labels)} images")
@@ -331,30 +292,7 @@ def prepare_dataset(dataset_root: str,
     return labels
 
 
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
 if __name__ == "__main__":
-    """
-    Example: Prepare your dataset
-    
-    Your folder structure should be:
-    
-    my_dataset/
-    ├── real/
-    │   ├── img1.jpg
-    │   ├── img2.jpg
-    │   └── ...
-    ├── hybrid/
-    │   ├── img1.jpg
-    │   ├── img2.jpg
-    │   └── ...
-    └── masks/
-        ├── img1.png
-        ├── img2.png
-        └── ...
-    """
     
     # CHANGE THIS to your actual dataset path
     DATASET_ROOT = '/kaggle/input/hybrid-dataset/hybrid-dataset'

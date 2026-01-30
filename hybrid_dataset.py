@@ -9,6 +9,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image, ImageFilter
+import PIL
 import torch.nn.functional as F
 import random
 
@@ -133,9 +134,15 @@ class HybridImageDataset(Dataset):
             img_path, label = self.labels[idx]
             mask_path = None
         
-        # Load image
+        # Load image with error handling
         full_path = os.path.join(self.img_dir, img_path)
-        img = Image.open(full_path).convert("RGB")
+        
+        try:
+            img = Image.open(full_path).convert("RGB")
+        except (PIL.UnidentifiedImageError, OSError, IOError) as e:
+            # If image is corrupted, try next one or return a black image
+            print(f"⚠️  Warning: Could not load {img_path}, using black placeholder")
+            img = Image.new('RGB', (224, 224), color='black')
         
         # Store original for FFT before augmentation
         img_original = img.copy()
@@ -151,9 +158,6 @@ class HybridImageDataset(Dataset):
             mask_full_path = os.path.join(self.img_dir, mask_path)
             if os.path.exists(mask_full_path):
                 mask = Image.open(mask_full_path).convert("L")
-                mask_array = np.array(mask)
-                mask_array = 255 - mask_array  # Invert: black↔white
-                mask = Image.fromarray(mask_array)
                 mask = self.mask_transform(mask)
             else:
                 # Create dummy mask if file doesn't exist

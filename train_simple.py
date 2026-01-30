@@ -40,25 +40,6 @@ def train_from_folders(
     save_dir: str = '/kaggle/working/checkpoints',
     experiment_name: str = 'hybrid_detection'
 ):
-    """
-    Complete training pipeline starting from folder structure
-    
-    Args:
-        dataset_root: Path to dataset with real/ and hybrid/ folders
-        real_folder: Name of folder with real images
-        hybrid_folder: Name of folder with hybrid images
-        mask_folder: Name of folder with masks
-        use_lite_model: Whether to use lightweight model
-        use_localization: Whether to use localization head
-        batch_size: Training batch size
-        num_epochs: Number of training epochs
-        learning_rate: Initial learning rate
-        val_split: Validation split ratio
-        device: 'cuda' or 'cpu'
-        num_workers: Number of data loading workers
-        save_dir: Directory to save checkpoints
-        experiment_name: Name for this experiment
-    """
     
     print("\n" + "=" * 80)
     print("HYBRID IMAGE DETECTION - TRAINING PIPELINE")

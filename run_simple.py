@@ -1,20 +1,3 @@
-"""
-SUPER SIMPLE END-TO-END EXAMPLE
-Just plug in your dataset path and run!
-
-Your folder structure should be:
-my_dataset/
-├── real/          ← Real images
-│   ├── img1.jpg
-│   └── ...
-├── hybrid/        ← Hybrid/fake images  
-│   ├── img1.jpg
-│   └── ...
-└── masks/         ← PNG masks (optional)
-    ├── img1.png
-    └── ...
-"""
-
 # ============================================================================
 # STEP 1: PREPARE YOUR DATA
 # ============================================================================
@@ -24,18 +7,8 @@ from prepare_data import prepare_dataset
 # CHANGE THIS TO YOUR DATASET PATH
 DATASET_PATH = '/kaggle/input/hybrid-dataset/hybrid-dataset'
 
-print("Step 1: Preparing dataset...")
-labels = prepare_dataset(
-    dataset_root=DATASET_PATH,
-    real_folder='real',      # Change if your folder is named differently
-    hybrid_folder='hybrid',  # Change if your folder is named differently
-    mask_folder='mask'      # Change if your folder is named differently
-)
-
-print(f"\n✅ Found {len(labels)} total images!")
-
 # ============================================================================
-# STEP 2: TRAIN THE MODEL
+# STEP 1: TRAIN THE MODEL
 # ============================================================================
 
 from train_simple import train_from_folders
@@ -64,41 +37,41 @@ print(f"\n✅ Model trained and saved to: {model_path}/best.pth")
 # STEP 3: TEST ON A SINGLE IMAGE
 # ============================================================================
 
-from inference import HybridImagePredictor
+# from inference import HybridImagePredictor
 
-print("\nStep 3: Testing on an image...")
+# print("\nStep 3: Testing on an image...")
 
-# Load the trained model
-predictor = HybridImagePredictor(
-    model_path=f'{model_path}/best.pth',
-    use_lite_model=True  # Must match what you trained
-)
+# # Load the trained model
+# predictor = HybridImagePredictor(
+#     model_path=f'{model_path}/best.pth',
+#     use_lite_model=True  # Must match what you trained
+# )
 
-# Test on a hybrid image (change this path)
-test_image = 'path/to/test/image.jpg'
+# # Test on a hybrid image (change this path)
+# test_image = 'path/to/test/image.jpg'
 
-try:
-    result = predictor.predict(test_image)
+# try:
+#     result = predictor.predict(test_image)
     
-    print("\n" + "="*60)
-    print("PREDICTION RESULT")
-    print("="*60)
-    print(f"Image: {test_image}")
-    print(f"Prediction: {result['prediction']}")
-    print(f"Confidence: {result['confidence']:.2%}")
-    print(f"Hybrid Probability: {result['probability']:.2%}")
-    print("="*60)
+#     print("\n" + "="*60)
+#     print("PREDICTION RESULT")
+#     print("="*60)
+#     print(f"Image: {test_image}")
+#     print(f"Prediction: {result['prediction']}")
+#     print(f"Confidence: {result['confidence']:.2%}")
+#     print(f"Hybrid Probability: {result['probability']:.2%}")
+#     print("="*60)
     
-    # Visualize
-    predictor.visualize_prediction(
-        test_image,
-        save_path='test_result.png'
-    )
-    print("\n✅ Visualization saved to: test_result.png")
+#     # Visualize
+#     predictor.visualize_prediction(
+#         test_image,
+#         save_path='test_result.png'
+#     )
+#     print("\n✅ Visualization saved to: test_result.png")
     
-except Exception as e:
-    print(f"\n⚠️  Could not test on image: {e}")
-    print("   Please provide a valid test image path above")
+# except Exception as e:
+#     print(f"\n⚠️  Could not test on image: {e}")
+#     print("   Please provide a valid test image path above")
 
 # ============================================================================
 # DONE!

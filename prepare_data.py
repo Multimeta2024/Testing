@@ -322,8 +322,8 @@ def prepare_dataset(dataset_root: str,
         preparer.verify_masks(num_samples=5)
     
     # Save labels
-    preparer.save_labels(labels, 'labels.json')
-    preparer.save_labels_txt(labels, 'labels.txt')
+    # preparer.save_labels(labels, 'labels.json')
+    # preparer.save_labels_txt(labels, 'labels.txt')
     
     print("\n✅ Dataset preparation complete!")
     print(f"✅ Ready to use with {len(labels)} images")
@@ -373,17 +373,3 @@ if __name__ == "__main__":
         verify_masks=True  # Set False to skip mask verification
     )
     
-    # Now you can use these labels with the training script
-    print("\n" + "=" * 70)
-    print("NEXT STEPS")
-    print("=" * 70)
-    print("\n1. Check the printed statistics above")
-    print("2. Review labels.json and labels.txt in your dataset folder")
-    print("3. Use the labels for training:")
-    print("\n   from train import prepare_data_loaders, HybridDetectionTrainer")
-    print(f"   train_loader, val_loader = prepare_data_loaders(")
-    print(f"       img_dir='{DATASET_ROOT}',")
-    print(f"       labels=labels")
-    print(f"   )")
-    print("\n4. Start training!")
-    print("=" * 70)

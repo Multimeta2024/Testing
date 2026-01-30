@@ -322,8 +322,8 @@ def prepare_dataset(dataset_root: str,
         preparer.verify_masks(num_samples=5)
     
     # Save labels
-    # preparer.save_labels(labels, 'labels.json')
-    # preparer.save_labels_txt(labels, 'labels.txt')
+    preparer.save_labels(labels, 'labels.json')
+    preparer.save_labels_txt(labels, 'labels.txt')
     
     print("\n✅ Dataset preparation complete!")
     print(f"✅ Ready to use with {len(labels)} images")

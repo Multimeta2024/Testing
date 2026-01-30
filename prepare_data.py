@@ -70,23 +70,17 @@ class DataPreparer:
         """Find corresponding mask for an image"""
         if not self.mask_folder:
             return None
-        
-        # Try exact name match with .png extension
-        image_stem = image_path.stem  # filename without extension
-        
-        # Try various naming conventions
-        possible_masks = [
-            self.mask_folder / f"{image_stem}.png",
-            self.mask_folder / f"{image_stem}_mask.png",
-            self.mask_folder / f"{image_stem}_mask_0.png",
-            self.mask_folder / f"{image_stem}_mask.PNG",
-        ]
-        
-        for mask_path in possible_masks:
-            if mask_path.exists():
-                return mask_path
-        
+
+        base_stem = image_path.stem.replace("_result_0", "").replace("_result", "")
+
+        mask_name = f"{base_stem}_mask_0.png"
+        mask_path = self.mask_folder / mask_name
+
+        if mask_path.exists():
+            return mask_path
+
         return None
+
     
     def create_labels_list(self) -> List[Tuple[str, int, Optional[str]]]:
         """

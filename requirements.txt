@@ -1,0 +1,23 @@
+# Core dependencies for Hybrid Image Detection System
+# Python 3.8+
+
+# Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+timm>=0.9.0
+
+# Data Processing
+numpy>=1.24.0
+pillow>=9.5.0
+scikit-learn>=1.3.0
+
+# Utilities
+tqdm>=4.65.0
+matplotlib>=3.7.0
+
+# Optional but recommended
+# albumentations>=1.3.0  # Advanced augmentation
+# opencv-python>=4.8.0   # Additional image processing
+# tensorboard>=2.13.0    # Training visualization
+# onnx>=1.14.0           # Model export
+# flask>=2.3.0           # API deployment

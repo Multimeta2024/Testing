@@ -18,18 +18,15 @@ print("\nStep 2: Training model...")
 
 # Quick training (lite model, fewer epochs)
 history, model_path = train_from_folders(
-    dataset_root=DATASET_PATH,
+    dataset_root='/kaggle/input/hybrid-dataset/hybrid-dataset',
     real_folder='real',
     hybrid_folder='hybrid',
-    mask_folder='mask',
-    
-    # Quick settings (change for production)
-    use_lite_model=True,      # Fast training
-    use_localization=False,
-    num_epochs=20,            # Quick test
+    mask_folder=None,          # ← CRITICAL: Disable masks
+    use_lite_model=True,       # ← Use lite model
+    use_localization=False,    # ← CRITICAL: Disable localization
+    num_epochs=20,
     batch_size=16,
-    
-    device='cuda' if torch.cuda.is_available() else 'cpu'
+    device='cuda'
 )
 
 print(f"\n✅ Model trained and saved to: {model_path}/best.pth")

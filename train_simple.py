@@ -208,7 +208,7 @@ def train_from_folders(
         train_loss = 0
         
         pbar = tqdm(train_loader, desc='Training')
-        for rgb, freq, labels, masks in pbar:
+        for batch_idx, (rgb, freq, labels, masks) in enumerate(pbar):
             rgb = rgb.to(device)
             freq = freq.to(device)
             labels = labels.to(device)
@@ -216,13 +216,22 @@ def train_from_folders(
             
             optimizer.zero_grad()
 
-            print(f"\n🔍 DEBUG INFO (first batch):")
-            print(f"Labels: {labels[:8].cpu().numpy()}")
-            print(f"Mask stats:")
-            for i in range(min(4, len(masks))):
-                if labels[i] == 1:  # Hybrid
-                    print(f"  Hybrid {i}: mask mean={masks[i].mean().item():.3f}, "
-                        f"min={masks[i].min().item():.3f}, max={masks[i].max().item():.3f}")
+            # DEBUG: Only print first batch of first epoch to avoid spam
+            if batch_idx == 0 and epoch == 0:
+                print(f"\n🔍 DEBUG INFO (first batch only):")
+                print(f"Labels: {labels[:8].cpu().numpy()}")
+                print(f"RGB shape: {rgb.shape}, Freq shape: {freq.shape}, Masks shape: {masks.shape}")
+                
+                # Check if masks are actually loaded (not all zeros)
+                has_real_masks = masks.abs().sum() > 0
+                if has_real_masks:
+                    print(f"Mask stats (masks ARE loaded):")
+                    for i in range(min(4, len(masks))):
+                        if labels[i] == 1:  # Hybrid
+                            print(f"  Hybrid {i}: mask mean={masks[i].mean().item():.3f}, "
+                                f"min={masks[i].min().item():.3f}, max={masks[i].max().item():.3f}")
+                else:
+                    print(f"✅ Masks: All zeros (masks disabled - CORRECT for lite model)")
             
             with autocast():
                 cls_logits, loc_maps = model(rgb, freq)

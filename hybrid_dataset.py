@@ -154,10 +154,18 @@ class HybridImageDataset(Dataset):
         freq = self.fft_transform(img_original)
         
         # Load mask if available
+        # Load mask if available
         if mask_path is not None:
             mask_full_path = os.path.join(self.img_dir, mask_path)
             if os.path.exists(mask_full_path):
                 mask = Image.open(mask_full_path).convert("L")
+                
+                # ✅ INVERT MASK: Your masks are opposite (black=edited, white=original)
+                # We need: white=edited, black=original
+                mask_array = np.array(mask)
+                mask_array = 255 - mask_array  # Invert: black↔white
+                mask = Image.fromarray(mask_array)
+                
                 mask = self.mask_transform(mask)
             else:
                 # Create dummy mask if file doesn't exist

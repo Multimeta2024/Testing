@@ -142,7 +142,9 @@ class HybridImageDetector(nn.Module):
         
         # Feature dimensions
         rgb_multiscale_dim = 256  # from fusion
-        rgb_final_dim = 1792  # EfficientNet-B4 final features
+        # Query the backbone for actual final feature channel count
+        # (features_only=True returns feature maps, NOT the 1792-dim classifier input)
+        rgb_final_dim = self.rgb_branch.backbone.feature_info.channels()[-1]  # 448 for efficientnet_b4
         freq_dim = 128
         edge_dim = 64
         

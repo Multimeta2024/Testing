@@ -25,6 +25,7 @@ history, model_path = train_from_folders(
     
     # Quick settings (change for production)
     use_lite_model=True,      # Fast training
+    use_localization=False,
     num_epochs=20,            # Quick test
     batch_size=16,
     

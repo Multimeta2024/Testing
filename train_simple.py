@@ -168,10 +168,10 @@ def train_from_folders(
     print(f"✅ Scheduler: CosineAnnealingWarmRestarts")
     
     # Loss functions
-    from train import FocalLoss, DiceLoss
-    cls_loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
+    from train import DiceLoss
+    cls_loss_fn = nn.BCEWithLogitsLoss()
     loc_loss_fn = DiceLoss() if use_localization and not use_lite_model else None
-    print(f"✅ Loss: Focal Loss (α=0.25, γ=2.0)")
+    print(f"✅ Loss: BCEWithLogitsLoss")
     if loc_loss_fn:
         print(f"✅ Localization Loss: Dice Loss")
     
@@ -220,7 +220,7 @@ def train_from_folders(
                 cls_logits, loc_maps = model(rgb, freq)
                 
                 # Classification loss
-                cls_loss = cls_loss_fn(cls_logits.squeeze(), labels)
+                cls_loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
                 
                 # Localization loss
                 if loc_loss_fn and loc_maps is not None:
@@ -234,6 +234,8 @@ def train_from_folders(
                     total_loss = cls_loss
             
             scaler.scale(total_loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             
@@ -255,10 +257,10 @@ def train_from_folders(
                 labels_tensor = labels.to(device)
                 
                 cls_logits, _ = model(rgb, freq)
-                loss = cls_loss_fn(cls_logits.squeeze(), labels_tensor)
+                loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels_tensor)
                 val_loss += loss.item()
                 
-                probs = torch.sigmoid(cls_logits.squeeze()).cpu().numpy()
+                probs = torch.sigmoid(cls_logits.squeeze(dim=1)).cpu().numpy()
                 all_probs.extend(probs)
                 all_labels.extend(labels.numpy())
         

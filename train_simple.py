@@ -215,6 +215,14 @@ def train_from_folders(
             masks = masks.to(device)
             
             optimizer.zero_grad()
+
+            print(f"\n🔍 DEBUG INFO (first batch):")
+            print(f"Labels: {labels[:8].cpu().numpy()}")
+            print(f"Mask stats:")
+            for i in range(min(4, len(masks))):
+                if labels[i] == 1:  # Hybrid
+                    print(f"  Hybrid {i}: mask mean={masks[i].mean().item():.3f}, "
+                        f"min={masks[i].min().item():.3f}, max={masks[i].max().item():.3f}")
             
             with autocast():
                 cls_logits, loc_maps = model(rgb, freq)
@@ -275,6 +283,13 @@ def train_from_folders(
         precision, recall, f1, _ = precision_recall_fscore_support(
             all_labels, preds, average='binary', zero_division=0
         )
+
+        # After validation, add:
+        print(f"\n🔍 Sample Predictions:")
+        print(f"First 10 probabilities: {all_probs[:10]}")
+        print(f"First 10 labels: {all_labels[:10]}")
+        print(f"Mean probability: {all_probs.mean():.3f}")
+        print(f"Std probability: {all_probs.std():.3f}")
         
         # Update history
         history['train_loss'].append(avg_train_loss)

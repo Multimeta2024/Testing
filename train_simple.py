@@ -1,6 +1,9 @@
 """
-Complete Training Script for Folder-Based Dataset
-Works directly with real/ and hybrid/ folders
+Training script for hybrid image detection.
+Updated to match rewritten dataset and model:
+  - Dataset now returns: rgb, freq, edge_map, label, mask  (5 items)
+  - Model now takes:     rgb, freq, edge_map               (3 inputs)
+  - Optimizer uses lower LR for pretrained backbone, higher for new heads
 """
 
 import os
@@ -15,7 +18,7 @@ from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 import json
 from datetime import datetime
 
-from hybrid_detection_model import HybridImageDetector, HybridDetectorLite
+from hybrid_detection_model import HybridDetectorLite, HybridImageDetector
 from hybrid_dataset import HybridImageDataset
 from prepare_data import prepare_dataset
 
@@ -24,13 +27,13 @@ def train_from_folders(
     dataset_root: str,
     real_folder: str = 'real',
     hybrid_folder: str = 'hybrid',
-    mask_folder: str = 'mask',
+    mask_folder: str = None,
     # Model settings
-    use_lite_model: bool = False,
-    use_localization: bool = True,
+    use_lite_model: bool = True,
+    use_localization: bool = False,
     # Training settings
     batch_size: int = 16,
-    num_epochs: int = 50,
+    num_epochs: int = 20,
     learning_rate: float = 3e-4,
     val_split: float = 0.2,
     # Hardware
@@ -45,7 +48,9 @@ def train_from_folders(
     print("HYBRID IMAGE DETECTION - TRAINING PIPELINE")
     print("=" * 80)
     
+    # ========================================================================
     # Step 1: Prepare dataset
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 1: PREPARING DATASET")
     print("=" * 80)
@@ -55,27 +60,25 @@ def train_from_folders(
         real_folder=real_folder,
         hybrid_folder=hybrid_folder,
         mask_folder=mask_folder,
-        verify_masks=True
+        verify_masks=(mask_folder is not None)
     )
     
     if len(labels) == 0:
         raise ValueError("No images found! Check your folder paths.")
     
+    # ========================================================================
     # Step 2: Split data
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 2: SPLITTING DATA")
     print("=" * 80)
     
-    # Shuffle
     np.random.seed(42)
     indices = np.random.permutation(len(labels))
     
-    # Split
     val_size = int(len(labels) * val_split)
-    train_size = len(labels) - val_size
-    
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:]
+    train_indices = indices[:len(labels) - val_size]
+    val_indices = indices[len(labels) - val_size:]
     
     train_labels = [labels[i] for i in train_indices]
     val_labels = [labels[i] for i in val_indices]
@@ -84,14 +87,15 @@ def train_from_folders(
     print(f"   ├─ Training samples: {len(train_labels)}")
     print(f"   └─ Validation samples: {len(val_labels)}")
     
-    # Check class balance
     train_real = sum(1 for l in train_labels if l[1] == 0)
     train_hybrid = sum(1 for l in train_labels if l[1] == 1)
     print(f"\n   Training set:")
     print(f"   ├─ Real: {train_real} ({train_real/len(train_labels)*100:.1f}%)")
     print(f"   └─ Hybrid: {train_hybrid} ({train_hybrid/len(train_labels)*100:.1f}%)")
     
+    # ========================================================================
     # Step 3: Create datasets and loaders
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 3: CREATING DATALOADERS")
     print("=" * 80)
@@ -131,7 +135,9 @@ def train_from_folders(
     print(f"   ├─ Training batches: {len(train_loader)}")
     print(f"   └─ Validation batches: {len(val_loader)}")
     
+    # ========================================================================
     # Step 4: Initialize model
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 4: INITIALIZING MODEL")
     print("=" * 80)
@@ -152,39 +158,54 @@ def train_from_folders(
     print(f"   ├─ Total parameters: {total_params:,}")
     print(f"   └─ Trainable parameters: {trainable_params:,}")
     
-    # Step 5: Setup training
+    # ========================================================================
+    # Step 5: Optimizer with differential learning rates
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 5: SETTING UP TRAINING")
     print("=" * 80)
     
-    # Optimizer
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
-    print(f"✅ Optimizer: AdamW (lr={learning_rate}, wd=0.01)")
+    # Pretrained backbone gets 10x lower LR than the new heads.
+    # The backbone already has good general features; the new freq/edge/classifier
+    # heads need to learn from scratch so they need higher LR.
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if 'rgb_encoder' in name:
+            backbone_params.append(param)
+        else:
+            head_params.append(param)
     
-    # Scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=10, T_mult=2, eta_min=1e-6
+    optimizer = optim.AdamW([
+        {'params': backbone_params, 'lr': learning_rate * 0.1, 'weight_decay': 0.01},
+        {'params': head_params,     'lr': learning_rate,        'weight_decay': 0.01},
+    ])
+    print(f"✅ Optimizer: AdamW")
+    print(f"   ├─ Backbone LR: {learning_rate * 0.1} ({len(backbone_params)} param groups)")
+    print(f"   └─ Head LR:     {learning_rate} ({len(head_params)} param groups)")
+    
+    # Cosine schedule
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs, eta_min=1e-6
     )
-    print(f"✅ Scheduler: CosineAnnealingWarmRestarts")
+    print(f"✅ Scheduler: CosineAnnealingLR (T_max={num_epochs})")
     
-    # Loss functions
-    from train import DiceLoss
+    # Loss
     cls_loss_fn = nn.BCEWithLogitsLoss()
-    loc_loss_fn = DiceLoss() if use_localization and not use_lite_model else None
     print(f"✅ Loss: BCEWithLogitsLoss")
-    if loc_loss_fn:
-        print(f"✅ Localization Loss: Dice Loss")
     
     # Mixed precision
     scaler = GradScaler()
     print(f"✅ Mixed Precision: Enabled")
     
-    # Create save directory
+    # Save directory
     save_dir = os.path.join(save_dir, experiment_name)
     os.makedirs(save_dir, exist_ok=True)
     print(f"✅ Save directory: {save_dir}")
     
+    # ========================================================================
     # Step 6: Training loop
+    # ========================================================================
     print("\n" + "=" * 80)
     print("STEP 6: TRAINING")
     print("=" * 80)
@@ -203,77 +224,61 @@ def train_from_folders(
         print(f"Epoch {epoch + 1}/{num_epochs}")
         print(f"{'='*80}")
         
+        # --------------------------------------------------------------------
         # Training
+        # --------------------------------------------------------------------
         model.train()
         train_loss = 0
         
         pbar = tqdm(train_loader, desc='Training')
-        for batch_idx, (rgb, freq, labels, masks) in enumerate(pbar):
+        for batch_idx, (rgb, freq, edge_map, labels, masks) in enumerate(pbar):
             rgb = rgb.to(device)
             freq = freq.to(device)
+            edge_map = edge_map.to(device)
             labels = labels.to(device)
-            masks = masks.to(device)
             
             optimizer.zero_grad()
 
-            # DEBUG: Only print first batch of first epoch to avoid spam
+            # Debug: print shapes once at the very start
             if batch_idx == 0 and epoch == 0:
-                print(f"\n🔍 DEBUG INFO (first batch only):")
-                print(f"Labels: {labels[:8].cpu().numpy()}")
-                print(f"RGB shape: {rgb.shape}, Freq shape: {freq.shape}, Masks shape: {masks.shape}")
-                
-                # Check if masks are actually loaded (not all zeros)
-                has_real_masks = masks.abs().sum() > 0
-                if has_real_masks:
-                    print(f"Mask stats (masks ARE loaded):")
-                    for i in range(min(4, len(masks))):
-                        if labels[i] == 1:  # Hybrid
-                            print(f"  Hybrid {i}: mask mean={masks[i].mean().item():.3f}, "
-                                f"min={masks[i].min().item():.3f}, max={masks[i].max().item():.3f}")
-                else:
-                    print(f"✅ Masks: All zeros (masks disabled - CORRECT for lite model)")
+                print(f"\n🔍 DEBUG (first batch, epoch 1 only):")
+                print(f"   RGB:      {rgb.shape}")
+                print(f"   Freq:     {freq.shape}")
+                print(f"   Edge map: {edge_map.shape}")
+                print(f"   Labels:   {labels[:8].cpu().numpy()}")
+                print(f"   Freq mean: {freq.mean():.4f}, Edge mean: {edge_map.mean():.4f}")
             
             with autocast():
-                cls_logits, loc_maps = model(rgb, freq)
-                
-                # Classification loss
-                cls_loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
-                
-                # Localization loss
-                if loc_loss_fn and loc_maps is not None:
-                    hybrid_mask = labels > 0.5
-                    if hybrid_mask.sum() > 0:
-                        loc_loss = loc_loss_fn(loc_maps[hybrid_mask], masks[hybrid_mask])
-                    else:
-                        loc_loss = torch.tensor(0.0, device=device)
-                    total_loss = cls_loss + 0.5 * loc_loss
-                else:
-                    total_loss = cls_loss
+                cls_logits, _ = model(rgb, freq, edge_map)
+                loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
             
-            scaler.scale(total_loss).backward()
+            scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             
-            train_loss += total_loss.item()
-            pbar.set_postfix({'loss': f'{total_loss.item():.4f}'})
+            train_loss += loss.item()
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         avg_train_loss = train_loss / len(train_loader)
         
+        # --------------------------------------------------------------------
         # Validation
+        # --------------------------------------------------------------------
         model.eval()
         val_loss = 0
         all_probs = []
         all_labels = []
         
         with torch.no_grad():
-            for rgb, freq, labels, masks in tqdm(val_loader, desc='Validation'):
+            for rgb, freq, edge_map, labels, masks in tqdm(val_loader, desc='Validation'):
                 rgb = rgb.to(device)
                 freq = freq.to(device)
+                edge_map = edge_map.to(device)
                 labels_tensor = labels.to(device)
                 
-                cls_logits, _ = model(rgb, freq)
+                cls_logits, _ = model(rgb, freq, edge_map)
                 loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels_tensor)
                 val_loss += loss.item()
                 
@@ -292,13 +297,8 @@ def train_from_folders(
         precision, recall, f1, _ = precision_recall_fscore_support(
             all_labels, preds, average='binary', zero_division=0
         )
-
-        # After validation, add:
-        print(f"\n🔍 Sample Predictions:")
-        print(f"First 10 probabilities: {all_probs[:10]}")
-        print(f"First 10 labels: {all_labels[:10]}")
-        print(f"Mean probability: {all_probs.mean():.3f}")
-        print(f"Std probability: {all_probs.std():.3f}")
+        
+        print(f"\n🔍 Prediction stats: mean={all_probs.mean():.3f}, std={all_probs.std():.3f}")
         
         # Update history
         history['train_loss'].append(avg_train_loss)
@@ -315,20 +315,18 @@ def train_from_folders(
         print(f"   ├─ Val Precision: {precision:.4f}")
         print(f"   └─ Val Recall: {recall:.4f}")
         
-        # Save checkpoint
+        # Save best
         is_best = val_auc > best_val_auc
         if is_best:
             best_val_auc = val_auc
             print(f"\n   ✅ New best model! (AUC: {val_auc:.4f})")
-            
-            checkpoint = {
+            torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_auc': val_auc,
                 'val_f1': f1
-            }
-            torch.save(checkpoint, os.path.join(save_dir, 'best.pth'))
+            }, os.path.join(save_dir, 'best.pth'))
         
         # Save latest
         torch.save({
@@ -337,7 +335,7 @@ def train_from_folders(
             'optimizer_state_dict': optimizer.state_dict(),
         }, os.path.join(save_dir, 'latest.pth'))
         
-        # Update scheduler
+        # Step scheduler
         scheduler.step()
     
     # Save history
@@ -360,62 +358,32 @@ def train_from_folders(
 # ============================================================================
 
 if __name__ == "__main__":
-    """
-    Ready-to-use training script for your folder structure
-    
-    Just set your dataset path and run!
-    """
-    
-    # ========================================================================
-    # CONFIGURATION - CHANGE THESE TO MATCH YOUR SETUP
-    # ========================================================================
     
     CONFIG = {
-        # Dataset paths
-        'dataset_root': '/kaggle/input/hybrid-dataset/hybrid-dataset',  # ← CHANGE THIS!
-        'real_folder': 'real',                    # Folder with real images
-        'hybrid_folder': 'hybrid',                # Folder with hybrid images (or 'fake')
-        'mask_folder': 'mask',                   # Folder with PNG masks
+        'dataset_root': '/kaggle/input/hybrid-dataset/hybrid-dataset',
+        'real_folder': 'real',
+        'hybrid_folder': 'hybrid',
+        'mask_folder': None,                  # Not needed for lite model
         
-        # Model settings
-        'use_lite_model': False,                  # True = faster, False = better performance
-        'use_localization': True,                 # Use masks for localization
+        'use_lite_model': True,
+        'use_localization': False,
         
-        # Training settings
-        'batch_size': 16,                         # Reduce if out of memory
-        'num_epochs': 50,                         # Number of training epochs
-        'learning_rate': 3e-4,                    # Learning rate
-        'val_split': 0.2,                         # 20% for validation
+        'batch_size': 16,
+        'num_epochs': 20,
+        'learning_rate': 3e-4,
+        'val_split': 0.2,
         
-        # Hardware
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'num_workers': 4,                         # Data loading workers
+        'num_workers': 4,
         
-        # Saving
         'save_dir': '/kaggle/working/checkpoints',
         'experiment_name': datetime.now().strftime('%Y%m%d_%H%M%S'),
     }
-    
-    # ========================================================================
-    # RUN TRAINING
-    # ========================================================================
     
     print("\n" + "=" * 80)
     print("CONFIGURATION")
     print("=" * 80)
     for key, value in CONFIG.items():
-        print(f"{key}: {value}")
+        print(f"  {key}: {value}")
     
-    # Start training
     history, save_dir = train_from_folders(**CONFIG)
-    
-    print("\n" + "=" * 80)
-    print("NEXT STEPS")
-    print("=" * 80)
-    print("\n1. Evaluate your model:")
-    print(f"   python evaluate.py --model_path {save_dir}/best.pth")
-    print("\n2. Run inference on test images:")
-    print(f"   python inference.py --model_path {save_dir}/best.pth")
-    print("\n3. Check training curves:")
-    print(f"   Check {save_dir}/history.json")
-    print("\n" + "=" * 80)

@@ -1,6 +1,12 @@
 """
 Dataset handler for hybrid images with smart augmentation
-Designed to maximize learning from limited data (5k images)
+Designed for PAIRED IMAGE detection: same base image, small local edit.
+
+KEY FIXES vs previous version:
+1. RGB and FFT are now computed from the SAME transformed image (were misaligned before)
+2. Augmentations are gentle - no RandomCrop/Rotation/ColorJitter that destroy edit artifacts
+3. FFT is computed per-patch (7x7 grid) so local edits aren't diluted by global averaging
+4. Edge map uses fixed Sobel/Laplacian filters to highlight boundary artifacts
 """
 
 import os
@@ -8,7 +14,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 from torchvision import transforms
-from PIL import Image, ImageFilter
+from PIL import Image
 import PIL
 import torch.nn.functional as F
 import random
@@ -16,314 +22,176 @@ import random
 
 class HybridImageDataset(Dataset):
     """
-    Dataset for hybrid image detection
-    Supports both classification and localization tasks
+    Dataset for hybrid image detection where real and hybrid are the SAME base image
+    with a small local edit (e.g. object added/removed in one region).
     """
     def __init__(self, 
                  img_dir, 
-                 labels,  # List of tuples: (image_path, label, mask_path)
+                 labels,
                  img_size=224,
                  mode='train',
                  use_augmentation=True):
-        """
-        Args:
-            img_dir: Directory containing images
-            labels: List of (img_path, label, mask_path) where:
-                    - label: 0=real, 1=hybrid
-                    - mask_path: Optional, path to manipulation mask (if available)
-            img_size: Input image size
-            mode: 'train', 'val', or 'test'
-            use_augmentation: Whether to apply data augmentation
-        """
         self.img_dir = img_dir
         self.labels = labels
         self.img_size = img_size
         self.mode = mode
         self.use_augmentation = use_augmentation and (mode == 'train')
         
-        # RGB transformations
-        if self.use_augmentation:
-            self.rgb_transform = transforms.Compose([
-                transforms.Resize((img_size + 32, img_size + 32)),  # Larger for random crop
-                transforms.RandomCrop((img_size, img_size)),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.2),  # Sometimes useful
-                transforms.RandomRotation(15),
-                transforms.ColorJitter(
-                    brightness=0.2,
-                    contrast=0.2,
-                    saturation=0.2,
-                    hue=0.1
-                ),
-                # Random JPEG compression (AI edits might have compression artifacts)
-                transforms.RandomApply([
-                    transforms.Lambda(lambda x: self._jpeg_compression(x))
-                ], p=0.3),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
-            ])
-        else:
-            self.rgb_transform = transforms.Compose([
-                transforms.Resize((img_size, img_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
-            ])
+        # Resize only - augmentation is handled manually below so we can
+        # keep RGB, FFT, and edge map in sync
+        self.base_transform = transforms.Compose([
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),  # -> [0, 1] float
+        ])
         
-        # Mask transform (if available)
+        # Mask transform
         self.mask_transform = transforms.Compose([
-            transforms.Resize((28, 28)),  # Match localization output size
+            transforms.Resize((28, 28)),
             transforms.ToTensor()
         ])
-    
-    def _jpeg_compression(self, img, quality=None):
-        """Simulate JPEG compression artifacts"""
-        if quality is None:
-            quality = random.randint(60, 95)
-        
-        import io
-        buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=quality)
-        buffer.seek(0)
-        return Image.open(buffer)
-    
-    def fft_transform(self, img):
+
+        # Fixed Sobel/Laplacian kernels (not learned - stable signal)
+        sobel_x = torch.tensor([[-1, 0, 1],
+                                [-2, 0, 2],
+                                [-1, 0, 1]], dtype=torch.float32).reshape(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1],
+                                [ 0,  0,  0],
+                                [ 1,  2,  1]], dtype=torch.float32).reshape(1, 1, 3, 3)
+        laplacian = torch.tensor([[ 0,  1,  0],
+                                  [ 1, -4,  1],
+                                  [ 0,  1,  0]], dtype=torch.float32).reshape(1, 1, 3, 3)
+        self.sobel_x = sobel_x
+        self.sobel_y = sobel_y
+        self.laplacian = laplacian
+
+    def compute_edge_map(self, img_tensor):
         """
-        Compute FFT magnitude spectrum
-        AI edits often introduce frequency domain artifacts
+        Compute edge map using fixed Sobel + Laplacian filters.
+        AI-generated regions have characteristic boundary artifacts.
+        
+        Args:
+            img_tensor: [3, H, W] float tensor in [0, 1]
+        Returns:
+            edge_map: [3, H, W] - sobel magnitude, laplacian, combined
         """
-        # Convert to grayscale
-        img_gray = np.array(img.convert("L"), dtype=np.float32)
+        gray = (0.299 * img_tensor[0:1] + 0.587 * img_tensor[1:2] + 0.114 * img_tensor[2:3]).unsqueeze(0)
         
-        # Apply 2D FFT
-        fft = np.fft.fft2(img_gray)
-        fft_shift = np.fft.fftshift(fft)
+        sx = F.conv2d(gray, self.sobel_x, padding=1)
+        sy = F.conv2d(gray, self.sobel_y, padding=1)
+        lap = F.conv2d(gray, self.laplacian, padding=1)
         
-        # Magnitude spectrum in log scale
-        magnitude = np.log(np.abs(fft_shift) + 1e-8)
+        sobel_mag = torch.sqrt(sx**2 + sy**2 + 1e-8)
+        sobel_mag = sobel_mag / (sobel_mag.amax() + 1e-8)
         
-        # Normalize to [0, 1]
-        magnitude = (magnitude - magnitude.min()) / (magnitude.max() - magnitude.min() + 1e-8)
+        lap = lap / (lap.abs().amax() + 1e-8)
+        lap = (lap + 1) / 2
         
-        # Convert to tensor
-        freq_tensor = torch.tensor(magnitude, dtype=torch.float32).unsqueeze(0)
+        combined = (sobel_mag + lap) / 2
         
-        # Resize to match input size
-        freq_tensor = F.interpolate(
-            freq_tensor.unsqueeze(0),
-            size=(self.img_size, self.img_size),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0)
+        edge_map = torch.cat([sobel_mag, lap, combined], dim=1).squeeze(0)  # [3, H, W]
+        return edge_map
+
+    def compute_patch_fft(self, img_tensor):
+        """
+        Compute FFT on a 7x7 grid of local patches.
+        Whole-image FFT dilutes small edits; patch FFT preserves local frequency anomalies.
         
-        return freq_tensor
+        Args:
+            img_tensor: [3, H, W] float tensor in [0, 1]
+        Returns:
+            patch_fft: [1, H, W]
+        """
+        gray = (0.299 * img_tensor[0] + 0.587 * img_tensor[1] + 0.114 * img_tensor[2]).numpy()
+        H, W = gray.shape
+        
+        grid = 7
+        ph = H // grid
+        pw = W // grid
+        fft_map = np.zeros((H, W), dtype=np.float32)
+        
+        for i in range(grid):
+            for j in range(grid):
+                y1 = i * ph
+                y2 = (i + 1) * ph if i < grid - 1 else H
+                x1 = j * pw
+                x2 = (j + 1) * pw if j < grid - 1 else W
+                
+                patch = gray[y1:y2, x1:x2]
+                fft = np.fft.fft2(patch)
+                fft_shift = np.fft.fftshift(fft)
+                magnitude = np.log(np.abs(fft_shift) + 1e-8)
+                
+                mag_min, mag_max = magnitude.min(), magnitude.max()
+                if mag_max - mag_min > 1e-8:
+                    magnitude = (magnitude - mag_min) / (mag_max - mag_min)
+                else:
+                    magnitude = np.zeros_like(magnitude)
+                
+                fft_map[y1:y2, x1:x2] = magnitude
+        
+        return torch.tensor(fft_map, dtype=torch.float32).unsqueeze(0)
     
     def __len__(self):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        # Parse label info
         if len(self.labels[idx]) == 3:
             img_path, label, mask_path = self.labels[idx]
         else:
             img_path, label = self.labels[idx]
             mask_path = None
         
-        # Load image with error handling
         full_path = os.path.join(self.img_dir, img_path)
-        
         try:
             img = Image.open(full_path).convert("RGB")
-        except (PIL.UnidentifiedImageError, OSError, IOError) as e:
-            # If image is corrupted, try next one or return a black image
+        except (PIL.UnidentifiedImageError, OSError, IOError):
             print(f"⚠️  Warning: Could not load {img_path}, using black placeholder")
             img = Image.new('RGB', (224, 224), color='black')
         
-        # Store original for FFT before augmentation
-        img_original = img.copy()
+        # Step 1: Resize to standard size (only non-destructive transform)
+        raw_tensor = self.base_transform(img)  # [3, 224, 224] in [0, 1]
         
-        # Apply RGB transformations
-        rgb = self.rgb_transform(img)
+        # Step 2: Compute edge map and patch FFT from the SAME raw tensor
+        edge_map = self.compute_edge_map(raw_tensor)   # [3, 224, 224]
+        freq = self.compute_patch_fft(raw_tensor)      # [1, 224, 224]
         
-        # Compute FFT from original (before augmentation)
-        freq = self.fft_transform(img_original)
+        # Step 3: Augmentation - apply the SAME flip to ALL three inputs
+        if self.use_augmentation and random.random() < 0.5:
+            raw_tensor = raw_tensor.flip(-1)
+            edge_map = edge_map.flip(-1)
+            freq = freq.flip(-1)
         
-        # Load mask if available
-        # Load mask if available
+        # Step 4: Normalize RGB for the backbone
+        rgb = raw_tensor.clone()
+        rgb[0] = (rgb[0] - 0.485) / 0.229
+        rgb[1] = (rgb[1] - 0.456) / 0.224
+        rgb[2] = (rgb[2] - 0.406) / 0.225
+        
+        # Step 5: Load mask
         if mask_path is not None:
             mask_full_path = os.path.join(self.img_dir, mask_path)
             if os.path.exists(mask_full_path):
                 mask = Image.open(mask_full_path).convert("L")
-                
-                # ✅ INVERT MASK: Your masks are opposite (black=edited, white=original)
-                # We need: white=edited, black=original
                 mask_array = np.array(mask)
-                mask_array = 255 - mask_array  # Invert: black↔white
+                mask_array = 255 - mask_array
                 mask = Image.fromarray(mask_array)
-                
                 mask = self.mask_transform(mask)
             else:
-                # Create dummy mask if file doesn't exist
                 mask = torch.zeros(1, 28, 28)
         else:
-            # Create dummy mask (all zeros for real, all ones for hybrid if no mask provided)
             if label == 1:
-                mask = torch.ones(1, 28, 28)  # Assume entire image is hybrid
+                mask = torch.ones(1, 28, 28)
             else:
                 mask = torch.zeros(1, 28, 28)
         
-        return rgb, freq, torch.tensor(label, dtype=torch.float32), mask
+        return rgb, freq, edge_map, torch.tensor(label, dtype=torch.float32), mask
 
 
 class SyntheticHybridDataset(Dataset):
-    """
-    Generate synthetic hybrid images on-the-fly for data augmentation
-    This helps when you have limited real hybrid data
-    """
-    def __init__(self, 
-                 real_img_dir,
-                 real_image_list,
-                 img_size=224,
-                 hybrid_ratio=0.5):
-        """
-        Args:
-            real_img_dir: Directory with real images
-            real_image_list: List of real image paths
-            img_size: Image size
-            hybrid_ratio: Probability of creating a hybrid (vs returning real)
-        """
-        self.img_dir = real_img_dir
-        self.img_list = real_image_list
-        self.img_size = img_size
-        self.hybrid_ratio = hybrid_ratio
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-    
-    def create_synthetic_hybrid(self, img):
-        """
-        Create synthetic hybrid by simple copy-paste or local modifications
-        This is NOT perfect but helps regularization
-        """
-        img_array = np.array(img)
-        h, w = img_array.shape[:2]
-        
-        # Create mask
-        mask = np.zeros((h, w), dtype=np.float32)
-        
-        # Random rectangular region
-        x1 = random.randint(0, w // 2)
-        y1 = random.randint(0, h // 2)
-        x2 = random.randint(x1 + w // 4, w)
-        y2 = random.randint(y1 + h // 4, h)
-        
-        # Apply simple modification (blur, color shift, etc.)
-        manipulation_type = random.choice(['blur', 'color_shift', 'noise'])
-        
-        if manipulation_type == 'blur':
-            region = Image.fromarray(img_array[y1:y2, x1:x2])
-            blurred = region.filter(ImageFilter.GaussianBlur(radius=random.uniform(2, 5)))
-            img_array[y1:y2, x1:x2] = np.array(blurred)
-        
-        elif manipulation_type == 'color_shift':
-            img_array[y1:y2, x1:x2] = np.clip(
-                img_array[y1:y2, x1:x2] * random.uniform(0.7, 1.3),
-                0, 255
-            ).astype(np.uint8)
-        
-        elif manipulation_type == 'noise':
-            noise = np.random.normal(0, 15, img_array[y1:y2, x1:x2].shape)
-            img_array[y1:y2, x1:x2] = np.clip(
-                img_array[y1:y2, x1:x2] + noise,
-                0, 255
-            ).astype(np.uint8)
-        
-        # Update mask
-        mask[y1:y2, x1:x2] = 1.0
-        
-        return Image.fromarray(img_array), mask
-    
-    def fft_transform(self, img):
-        """Same as HybridImageDataset"""
-        img_gray = np.array(img.convert("L"), dtype=np.float32)
-        fft = np.fft.fft2(img_gray)
-        fft_shift = np.fft.fftshift(fft)
-        magnitude = np.log(np.abs(fft_shift) + 1e-8)
-        magnitude = (magnitude - magnitude.min()) / (magnitude.max() - magnitude.min() + 1e-8)
-        freq_tensor = torch.tensor(magnitude, dtype=torch.float32).unsqueeze(0)
-        freq_tensor = F.interpolate(
-            freq_tensor.unsqueeze(0),
-            size=(self.img_size, self.img_size),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0)
-        return freq_tensor
-    
+    """Kept for compatibility but not used in current training"""
+    def __init__(self, *args, **kwargs):
+        pass
     def __len__(self):
-        return len(self.img_list) * 2  # Can generate many synthetic variants
-    
+        return 0
     def __getitem__(self, idx):
-        # Get base image
-        img_idx = idx % len(self.img_list)
-        img_path = os.path.join(self.img_dir, self.img_list[img_idx])
-        img = Image.open(img_path).convert("RGB")
-        
-        # Decide if creating hybrid or using real
-        if random.random() < self.hybrid_ratio:
-            # Create synthetic hybrid
-            img, mask_np = self.create_synthetic_hybrid(img)
-            label = 1.0
-            
-            # Resize mask
-            mask = Image.fromarray((mask_np * 255).astype(np.uint8))
-            mask = transforms.Resize((28, 28))(mask)
-            mask = transforms.ToTensor()(mask)
-        else:
-            # Use real image
-            label = 0.0
-            mask = torch.zeros(1, 28, 28)
-        
-        # Transform
-        rgb = self.transform(img)
-        freq = self.fft_transform(img)
-        
-        return rgb, freq, torch.tensor(label, dtype=torch.float32), mask
-
-
-if __name__ == "__main__":
-    # Example usage
-    print("Testing HybridImageDataset...")
-    
-    # Example label format
-    train_labels = [
-        ("real_img1.jpg", 0, None),  # Real image
-        ("hybrid_img1.jpg", 1, "hybrid_img1_mask.png"),  # Hybrid with mask
-        ("hybrid_img2.jpg", 1, None),  # Hybrid without mask
-    ]
-    
-    # dataset = HybridImageDataset(
-    #     img_dir="path/to/images",
-    #     labels=train_labels,
-    #     mode='train'
-    # )
-    
-    # rgb, freq, label, mask = dataset[0]
-    # print(f"RGB shape: {rgb.shape}")
-    # print(f"Freq shape: {freq.shape}")
-    # print(f"Label: {label}")
-    # print(f"Mask shape: {mask.shape}")
-    
-    print("\nDataset classes ready!")
-    print("Use HybridImageDataset for your 5k real hybrid images")
-    print("Use SyntheticHybridDataset to augment with synthetic data")
+        pass

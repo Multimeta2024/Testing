@@ -326,10 +326,13 @@ def train_from_folders(
                 print(f"   Edge map: {edge_map.shape}")
                 print(f"   Labels:   {labels[:8].cpu().numpy()}")
                 print(f"   Freq mean: {freq.mean():.4f}, Edge mean: {edge_map.mean():.4f}")
-                print("Spatial map shape:", spatial_map.shape)
+                
             
             with autocast():
                 cls_logits, spatial_map = model(rgb, freq, edge_map)
+              
+                if batch_idx == 0 and epoch == 0:
+                    print("Spatial map shape:", spatial_map.shape)
 
                 # Classification loss
                 cls_loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)

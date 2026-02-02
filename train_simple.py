@@ -109,16 +109,24 @@ def train_from_folders(
     # -------- SMALL DEBUG RUN (300 images total) --------
     def limit_by_pairs(labels, max_pairs=150):
         from collections import defaultdict
-        groups = defaultdict(list)
-        for item in labels:
-            base = get_base_id(item[0])
-            groups[base].append(item)
+        groups = defaultdict(dict)
+
+        # Force both real and hybrid to exist per pair
+        for path, label, *rest in labels:
+            base = get_base_id(path)
+            groups[base][label] = (path, label, *rest)
 
         selected = []
-        for i, (_, items) in enumerate(groups.items()):
-            if i >= max_pairs:
+        count = 0
+
+        for base, pair in groups.items():
+            if 0 in pair and 1 in pair:
+                selected.append(pair[0])  # real
+                selected.append(pair[1])  # hybrid
+                count += 1
+            if count >= max_pairs:
                 break
-            selected.extend(items)
+
         return selected
 
     # 150 pairs = ~300 images

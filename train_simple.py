@@ -107,20 +107,41 @@ def train_from_folders(
     print(f"   └─ Val pairs:   {len(set(get_base_id(x[0]) for x in val_labels))}")
 
     # -------- SMALL DEBUG RUN (300 images total) --------
-    MAX_IMAGES = 300
+    def limit_by_pairs(labels, max_pairs=150):
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for item in labels:
+            base = get_base_id(item[0])
+            groups[base].append(item)
 
-    train_labels = train_labels[:MAX_IMAGES]
-    val_labels   = val_labels[:MAX_IMAGES]
+        selected = []
+        for i, (_, items) in enumerate(groups.items()):
+            if i >= max_pairs:
+                break
+            selected.extend(items)
+        return selected
 
-    print(f"\n🧪 DEBUG MODE:")
+    # 150 pairs = ~300 images
+    train_labels = limit_by_pairs(train_labels, max_pairs=150)
+    val_labels   = limit_by_pairs(val_labels,   max_pairs=150)
+
+    print(f"\n🧪 DEBUG MODE (PAIR-AWARE):")
     print(f"   ├─ Train samples: {len(train_labels)}")
     print(f"   └─ Val samples:   {len(val_labels)}")
 
     train_real = sum(1 for l in train_labels if l[1] == 0)
     train_hybrid = sum(1 for l in train_labels if l[1] == 1)
+    val_real = sum(1 for l in val_labels if l[1] == 0)
+    val_hybrid = sum(1 for l in val_labels if l[1] == 1)
+
     print(f"\n   Training set:")
-    print(f"   ├─ Real: {train_real} ({train_real/len(train_labels)*100:.1f}%)")
-    print(f"   └─ Hybrid: {train_hybrid} ({train_hybrid/len(train_labels)*100:.1f}%)")
+    print(f"   ├─ Real:   {train_real}")
+    print(f"   └─ Hybrid: {train_hybrid}")
+
+    print(f"\n   Validation set:")
+    print(f"   ├─ Real:   {val_real}")
+    print(f"   └─ Hybrid: {val_hybrid}")
+
     
     # ========================================================================
     # Step 3: Create datasets and loaders

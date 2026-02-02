@@ -79,8 +79,21 @@ def train_from_folders(
     import random
 
     def get_base_id(path):
+        """
+        Extract base ID from filenames like:
+        00000_00000_000003083_origin_0.png
+        00000_00000_000003083_result_0.png
+        """
         name = Path(path).stem
-        return name.replace("_result_0", "").replace("_result", "")
+
+        if name.endswith("_origin_0"):
+            return name.replace("_origin_0", "")
+        if name.endswith("_result_0"):
+            return name.replace("_result_0", "")
+
+        # fallback safety
+        return name
+
 
     # Group real + hybrid by base image
     groups = {}
@@ -109,25 +122,33 @@ def train_from_folders(
     # -------- SMALL DEBUG RUN (300 images total) --------
     def limit_by_pairs(labels, max_pairs=150):
         from collections import defaultdict
-        groups = defaultdict(dict)
 
-        # Force both real and hybrid to exist per pair
-        for path, label, *rest in labels:
+        groups = defaultdict(list)
+
+        # group by base id
+        for item in labels:
+            path = item[0]
             base = get_base_id(path)
-            groups[base][label] = (path, label, *rest)
+            groups[base].append(item)
 
         selected = []
-        count = 0
+        pair_count = 0
 
-        for base, pair in groups.items():
-            if 0 in pair and 1 in pair:
-                selected.append(pair[0])  # real
-                selected.append(pair[1])  # hybrid
-                count += 1
-            if count >= max_pairs:
+        for base, items in groups.items():
+            # expect exactly 2: one real (0) and one hybrid (1)
+            real = [x for x in items if x[1] == 0]
+            hybrid = [x for x in items if x[1] == 1]
+
+            if len(real) == 1 and len(hybrid) == 1:
+                selected.append(real[0])
+                selected.append(hybrid[0])
+                pair_count += 1
+
+            if pair_count >= max_pairs:
                 break
 
         return selected
+
 
     # 150 pairs = ~300 images
     train_labels = limit_by_pairs(train_labels, max_pairs=150)

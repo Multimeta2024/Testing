@@ -347,7 +347,7 @@ def train_from_folders(
                 else:
                     loc_loss = 0.0
 
-                loss = cls_loss + 0.2 * loc_loss
+                loss = cls_loss + 0.05 * loc_loss
 
             
             scaler.scale(loss).backward()

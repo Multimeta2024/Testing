@@ -292,9 +292,13 @@ class HybridDetectorLite(nn.Module):
         edge_feat = self.edge_branch(edge_map)      # [B, 64, 7, 7]
         
         fused = torch.cat([rgb_feat, freq_feat, edge_feat], dim=1)
-        classification = self.classifier(fused)     # [B, 1]
-        
-        return classification, None
+        # 1️⃣ Spatial map BEFORE pooling (keep 7x7)
+        spatial_logits = self.classifier[:-3](fused)   # stops BEFORE AdaptiveMaxPool2d
+        # 2️⃣ Final decision (any-patch logic)
+        classification = self.classifier[-3:](spatial_logits)
+
+        return classification, spatial_logits
+
 
 
 if __name__ == "__main__":

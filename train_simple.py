@@ -151,8 +151,8 @@ def train_from_folders(
 
 
     # 150 pairs = ~300 images
-    train_labels = limit_by_pairs(train_labels, max_pairs=150)
-    val_labels   = limit_by_pairs(val_labels,   max_pairs=150)
+    train_labels = limit_by_pairs(train_labels, max_pairs=1000)
+    val_labels   = limit_by_pairs(val_labels,   max_pairs=1000)
 
     print(f"\n🧪 DEBUG MODE (PAIR-AWARE):")
     print(f"   ├─ Train samples: {len(train_labels)}")
@@ -326,10 +326,26 @@ def train_from_folders(
                 print(f"   Edge map: {edge_map.shape}")
                 print(f"   Labels:   {labels[:8].cpu().numpy()}")
                 print(f"   Freq mean: {freq.mean():.4f}, Edge mean: {edge_map.mean():.4f}")
+                print("Spatial map shape:", spatial_map.shape)
             
             with autocast():
-                cls_logits, _ = model(rgb, freq, edge_map)
-                loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
+                cls_logits, spatial_map = model(rgb, freq, edge_map)
+
+                # Classification loss
+                cls_loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
+
+                # --- Max-activation regularization ---
+                # Encourage hybrid images to have strong localized peaks
+                if spatial_map is not None:
+                    max_act = spatial_map.view(spatial_map.size(0), -1).max(dim=1)[0]
+                    loc_loss = torch.mean(
+                        (1 - labels) * max_act + labels * torch.relu(0.5 - max_act)
+                    )
+                else:
+                    loc_loss = 0.0
+
+                loss = cls_loss + 0.2 * loc_loss
+
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)

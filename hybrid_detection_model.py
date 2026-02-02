@@ -272,7 +272,7 @@ class HybridDetectorLite(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             
-            nn.AdaptiveAvgPool2d(1),   # pool only here, at the very end
+            nn.AdaptiveMaxPool2d(1),   # pool only here, at the very end
             nn.Flatten(),
             nn.Linear(64, num_classes)
         )

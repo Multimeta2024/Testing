@@ -21,6 +21,8 @@ from datetime import datetime
 from hybrid_detection_model import HybridDetectorLite, HybridImageDetector
 from hybrid_dataset import HybridImageDataset
 from prepare_data import prepare_dataset
+from train import FocalLoss
+
 
 
 def train_from_folders(
@@ -73,20 +75,47 @@ def train_from_folders(
     print("STEP 2: SPLITTING DATA")
     print("=" * 80)
     
-    np.random.seed(42)
-    indices = np.random.permutation(len(labels))
-    
-    val_size = int(len(labels) * val_split)
-    train_indices = indices[:len(labels) - val_size]
-    val_indices = indices[len(labels) - val_size:]
-    
-    train_labels = [labels[i] for i in train_indices]
-    val_labels = [labels[i] for i in val_indices]
-    
-    print(f"\n✅ Data split complete:")
-    print(f"   ├─ Training samples: {len(train_labels)}")
-    print(f"   └─ Validation samples: {len(val_labels)}")
-    
+    from pathlib import Path
+    import random
+
+    def get_base_id(path):
+        name = Path(path).stem
+        return name.replace("_result_0", "").replace("_result", "")
+
+    # Group real + hybrid by base image
+    groups = {}
+    for item in labels:
+        base = get_base_id(item[0])
+        groups.setdefault(base, []).append(item)
+
+    group_keys = list(groups.keys())
+    random.seed(42)
+    random.shuffle(group_keys)
+
+    val_cut = int(len(group_keys) * val_split)
+    val_keys = set(group_keys[:val_cut])
+
+    train_labels, val_labels = [], []
+    for k, items in groups.items():
+        if k in val_keys:
+            val_labels.extend(items)
+        else:
+            train_labels.extend(items)
+
+    print(f"\n✅ Pair-aware split complete:")
+    print(f"   ├─ Train pairs: {len(set(get_base_id(x[0]) for x in train_labels))}")
+    print(f"   └─ Val pairs:   {len(set(get_base_id(x[0]) for x in val_labels))}")
+
+    # -------- SMALL DEBUG RUN (300 images total) --------
+    MAX_IMAGES = 300
+
+    train_labels = train_labels[:MAX_IMAGES]
+    val_labels   = val_labels[:MAX_IMAGES]
+
+    print(f"\n🧪 DEBUG MODE:")
+    print(f"   ├─ Train samples: {len(train_labels)}")
+    print(f"   └─ Val samples:   {len(val_labels)}")
+
     train_real = sum(1 for l in train_labels if l[1] == 0)
     train_hybrid = sum(1 for l in train_labels if l[1] == 1)
     print(f"\n   Training set:")
@@ -191,9 +220,9 @@ def train_from_folders(
     print(f"✅ Scheduler: CosineAnnealingLR (T_max={num_epochs})")
     
     # Loss
-    cls_loss_fn = nn.BCEWithLogitsLoss()
-    print(f"✅ Loss: BCEWithLogitsLoss")
-    
+    cls_loss_fn = FocalLoss()
+    print("✅ Loss: FocalLoss")
+
     # Mixed precision
     scaler = GradScaler()
     print(f"✅ Mixed Precision: Enabled")

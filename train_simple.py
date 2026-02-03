@@ -399,10 +399,10 @@ def train_from_folders(
 
                 # ---- Aggregate forensic probability ----
                 probs = (
-                    0.4 * torch.sigmoid(patch_score) +
-                    0.3 * torch.sigmoid(texture_score) +
-                    0.3 * torch.sigmoid(energy_score)
-                ).cpu().numpy()
+                    0.25 * torch.sigmoid(patch_score) +
+                    0.35 * torch.sigmoid(texture_score) +
+                    0.40 * torch.sigmoid(energy_score)).cpu().numpy()
+
 
                 all_probs.extend(probs)
                 all_labels.extend(labels.cpu().numpy())
@@ -413,7 +413,8 @@ def train_from_folders(
         all_probs = np.array(all_probs)
         all_labels = np.array(all_labels)
 
-        preds = (all_probs > 0.5).astype(int)
+        preds = (all_probs > 0.65).astype(int)
+
 
         val_auc = roc_auc_score(all_labels, all_probs)
         precision, recall, f1, _ = precision_recall_fscore_support(

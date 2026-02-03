@@ -349,8 +349,8 @@ def train_from_folders(
                     0.40 * torch.sigmoid(energy_score)
                 )
 
-                # ---- Variance regularization (PREVENT COLLAPSE) ----
-                var_loss = torch.relu(0.05 - agg_score.std())
+                # ---- Variance regularization (ANTI-COLLAPSE) ----
+                var_loss = torch.relu(0.08 - agg_score.std(unbiased=False))
 
                 # ---- Final loss ----
                 loss = (
@@ -358,8 +358,15 @@ def train_from_folders(
                     0.3 * loss_texture +
                     0.3 * loss_energy +
                     0.2 * loss_cls +
-                    0.1 * var_loss
+                    0.2 * var_loss
                 )
+
+                if batch_idx == 0 and epoch == 0:
+                    print(
+                        f"[VAR-DEBUG] mean={agg_score.mean().item():.3f}, "
+                        f"std={agg_score.std(unbiased=False).item():.3f}, "
+                        f"var_loss={var_loss.item():.3f}"
+                    )
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)

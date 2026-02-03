@@ -343,11 +343,22 @@ def train_from_folders(
 
                 loss_cls = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
 
+                agg_score = (
+                    0.25 * torch.sigmoid(patch_score) +
+                    0.35 * torch.sigmoid(texture_score) +
+                    0.40 * torch.sigmoid(energy_score)
+                )
+
+                # ---- Variance regularization (PREVENT COLLAPSE) ----
+                var_loss = torch.relu(0.05 - agg_score.std())
+
+                # ---- Final loss ----
                 loss = (
                     0.4 * loss_patch +
                     0.3 * loss_texture +
                     0.3 * loss_energy +
-                    0.2 * loss_cls
+                    0.2 * loss_cls +
+                    0.1 * var_loss
                 )
 
             scaler.scale(loss).backward()

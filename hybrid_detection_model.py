@@ -297,7 +297,27 @@ class HybridDetectorLite(nn.Module):
         # 2️⃣ Final decision (any-patch logic)
         classification = self.classifier[-3:](spatial_logits)
 
-        return classification, spatial_logits
+        patch_score, texture_score, energy_score = self.spatial_scores(spatial_logits)
+
+        return classification, {"patch": patch_score,"texture": texture_score,"energy": energy_score}
+    
+    def spatial_scores(self, spatial_map):
+        """
+        spatial_map: [B, C, H, W]
+        returns 3 scalar scores per image
+        """
+
+        # 1️⃣ Patch anomaly score (max activation)
+        patch_score = spatial_map.view(spatial_map.size(0), -1).max(dim=1)[0]
+
+        # 2️⃣ Texture inconsistency score (std of activations)
+        texture_score = spatial_map.view(spatial_map.size(0), -1).std(dim=1)
+
+        # 3️⃣ Energy score (mean absolute activation)
+        energy_score = spatial_map.abs().mean(dim=[1, 2, 3])
+
+        return patch_score, texture_score, energy_score
+
 
 
 

@@ -329,27 +329,27 @@ def train_from_folders(
                 
             
             with autocast():
-                cls_logits, spatial_map = model(rgb, freq, edge_map)
-              
-                if batch_idx == 0 and epoch == 0:
-                    print("Spatial map shape:", spatial_map.shape)
+                cls_logits, scores = model(rgb, freq, edge_map)
 
-                # Classification loss
-                cls_loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
+                patch_score   = scores["patch"]
+                texture_score = scores["texture"]
+                energy_score  = scores["energy"]
 
-                # --- Max-activation regularization ---
-                # Encourage hybrid images to have strong localized peaks
-                if spatial_map is not None:
-                    max_act = spatial_map.view(spatial_map.size(0), -1).max(dim=1)[0]
-                    loc_loss = torch.mean(
-                        (1 - labels) * max_act + labels * torch.relu(0.5 - max_act)
-                    )
-                else:
-                    loc_loss = 0.0
+                labels = labels.float()
 
-                loss = cls_loss + 0.05 * loc_loss
+                loss_patch   = cls_loss_fn(patch_score, labels)
+                loss_texture = cls_loss_fn(texture_score, labels)
+                loss_energy  = cls_loss_fn(energy_score, labels)
 
-            
+                loss_cls = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
+
+                loss = (
+                    0.4 * loss_patch +
+                    0.3 * loss_texture +
+                    0.3 * loss_energy +
+                    0.2 * loss_cls
+                )
+
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -374,23 +374,47 @@ def train_from_folders(
                 rgb = rgb.to(device)
                 freq = freq.to(device)
                 edge_map = edge_map.to(device)
-                labels_tensor = labels.to(device)
-                
-                cls_logits, _ = model(rgb, freq, edge_map)
-                loss = cls_loss_fn(cls_logits.squeeze(dim=1), labels_tensor)
+                labels_tensor = labels.to(device).float()
+
+                # Forward pass (Option A outputs)
+                cls_logits, scores = model(rgb, freq, edge_map)
+
+                patch_score   = scores["patch"]
+                texture_score = scores["texture"]
+                energy_score  = scores["energy"]
+
+                # ---- Validation loss (same as training) ----
+                loss_patch   = cls_loss_fn(patch_score, labels_tensor)
+                loss_texture = cls_loss_fn(texture_score, labels_tensor)
+                loss_energy  = cls_loss_fn(energy_score, labels_tensor)
+                loss_cls     = cls_loss_fn(cls_logits.squeeze(1), labels_tensor)
+
+                loss = (
+                    0.4 * loss_patch +
+                    0.3 * loss_texture +
+                    0.3 * loss_energy +
+                    0.2 * loss_cls
+                )
                 val_loss += loss.item()
-                
-                probs = torch.sigmoid(cls_logits.squeeze(dim=1)).cpu().numpy()
+
+                # ---- Aggregate forensic probability ----
+                probs = (
+                    0.4 * torch.sigmoid(patch_score) +
+                    0.3 * torch.sigmoid(texture_score) +
+                    0.3 * torch.sigmoid(energy_score)
+                ).cpu().numpy()
+
                 all_probs.extend(probs)
-                all_labels.extend(labels.numpy())
-        
+                all_labels.extend(labels.cpu().numpy())
+
+        # ---- Final metrics ----
         avg_val_loss = val_loss / len(val_loader)
-        
-        # Metrics
+
         all_probs = np.array(all_probs)
         all_labels = np.array(all_labels)
+
         preds = (all_probs > 0.5).astype(int)
-        
+
         val_auc = roc_auc_score(all_labels, all_probs)
         precision, recall, f1, _ = precision_recall_fscore_support(
             all_labels, preds, average='binary', zero_division=0

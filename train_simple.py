@@ -150,10 +150,6 @@ def train_from_folders(
         return selected
 
 
-    # 150 pairs = ~300 images
-    train_labels = limit_by_pairs(train_labels, max_pairs=1000)
-    val_labels   = limit_by_pairs(val_labels,   max_pairs=1000)
-
     print(f"\n🧪 DEBUG MODE (PAIR-AWARE):")
     print(f"   ├─ Train samples: {len(train_labels)}")
     print(f"   └─ Val samples:   {len(val_labels)}")
@@ -329,7 +325,7 @@ def train_from_folders(
                 
             
             with autocast():
-                cls_logits, scores = model(rgb, freq, edge_map)
+                _, scores = model(rgb, freq, edge_map)
 
                 patch_score   = scores["patch"]
                 texture_score = scores["texture"]
@@ -337,36 +333,45 @@ def train_from_folders(
 
                 labels = labels.float()
 
-                loss_patch   = cls_loss_fn(patch_score, labels)
-                loss_texture = cls_loss_fn(texture_score, labels)
-                loss_energy  = cls_loss_fn(energy_score, labels)
-
-                loss_cls = cls_loss_fn(cls_logits.squeeze(dim=1), labels)
-
+                # --------------------------------------------------
+                # Aggregate forensic risk score (MAIN SIGNAL)
+                # --------------------------------------------------
                 agg_score = (
                     0.25 * torch.sigmoid(patch_score) +
                     0.35 * torch.sigmoid(texture_score) +
                     0.40 * torch.sigmoid(energy_score)
                 )
 
-                # ---- Variance regularization (ANTI-COLLAPSE) ----
+                # --------------------------------------------------
+                # Pairwise ranking loss (OPTIMIZES AUC)
+                # --------------------------------------------------
+                real_scores   = agg_score[labels == 0]
+                hybrid_scores = agg_score[labels == 1]
+
+                if len(real_scores) > 0 and len(hybrid_scores) > 0:
+                    rank_loss = torch.relu(
+                        0.15 - (hybrid_scores.mean() - real_scores.mean())
+                    )
+                else:
+                    rank_loss = torch.tensor(0.0, device=agg_score.device)
+
+                # --------------------------------------------------
+                # Variance regularization (ANTI-COLLAPSE)
+                # --------------------------------------------------
                 var_loss = torch.relu(0.08 - agg_score.std(unbiased=False))
 
-                # ---- Final loss ----
-                loss = (
-                    0.4 * loss_patch +
-                    0.3 * loss_texture +
-                    0.3 * loss_energy +
-                    0.2 * loss_cls +
-                    0.2 * var_loss
-                )
+                # --------------------------------------------------
+                # Final loss (RANKING OBJECTIVE)
+                # --------------------------------------------------
+                loss = rank_loss + 0.2 * var_loss
 
                 if batch_idx == 0 and epoch == 0:
                     print(
-                        f"[VAR-DEBUG] mean={agg_score.mean().item():.3f}, "
+                        f"[RANK-DEBUG] mean={agg_score.mean().item():.3f}, "
                         f"std={agg_score.std(unbiased=False).item():.3f}, "
-                        f"var_loss={var_loss.item():.3f}"
+                        f"rank_loss={rank_loss.item():.3f}"
                     )
+
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -383,102 +388,91 @@ def train_from_folders(
         # Validation
         # --------------------------------------------------------------------
         model.eval()
-        val_loss = 0
         all_probs = []
         all_labels = []
-        
+
         with torch.no_grad():
             for rgb, freq, edge_map, labels, masks in tqdm(val_loader, desc='Validation'):
                 rgb = rgb.to(device)
                 freq = freq.to(device)
                 edge_map = edge_map.to(device)
-                labels_tensor = labels.to(device).float()
+                labels = labels.float().to(device)
 
-                # Forward pass (Option A outputs)
-                cls_logits, scores = model(rgb, freq, edge_map)
+                # Forward
+                _, scores = model(rgb, freq, edge_map)
 
                 patch_score   = scores["patch"]
                 texture_score = scores["texture"]
                 energy_score  = scores["energy"]
 
-                # ---- Validation loss (same as training) ----
-                loss_patch   = cls_loss_fn(patch_score, labels_tensor)
-                loss_texture = cls_loss_fn(texture_score, labels_tensor)
-                loss_energy  = cls_loss_fn(energy_score, labels_tensor)
-                loss_cls     = cls_loss_fn(cls_logits.squeeze(1), labels_tensor)
-
-                loss = (
-                    0.4 * loss_patch +
-                    0.3 * loss_texture +
-                    0.3 * loss_energy +
-                    0.2 * loss_cls
-                )
-                val_loss += loss.item()
-
-                # ---- Aggregate forensic probability ----
-                probs = (
+                # --------------------------------------------------
+                # Aggregate forensic risk score (SAME AS TRAINING)
+                # --------------------------------------------------
+                agg_score = (
                     0.25 * torch.sigmoid(patch_score) +
                     0.35 * torch.sigmoid(texture_score) +
-                    0.40 * torch.sigmoid(energy_score)).cpu().numpy()
+                    0.40 * torch.sigmoid(energy_score)
+                )
 
-
-                all_probs.extend(probs)
+                all_probs.extend(agg_score.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
 
-        # ---- Final metrics ----
-        avg_val_loss = val_loss / len(val_loader)
-
+        # --------------------------------------------------
+        # Metrics
+        # --------------------------------------------------
         all_probs = np.array(all_probs)
         all_labels = np.array(all_labels)
 
-        preds = (all_probs > 0.65).astype(int)
-
-
         val_auc = roc_auc_score(all_labels, all_probs)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, preds, average='binary', zero_division=0
+
+        real_mean   = all_probs[all_labels == 0].mean()
+        hybrid_mean = all_probs[all_labels == 1].mean()
+        gap = hybrid_mean - real_mean
+
+        print(
+            f"Real mean={real_mean:.3f} | "
+            f"Hybrid mean={hybrid_mean:.3f} | "
+            f"Gap={gap:.3f}"
         )
-        
-        print(f"\n🔍 Prediction stats: mean={all_probs.mean():.3f}, std={all_probs.std():.3f}")
-        
-        # Update history
+
+        # --------------------------------------------------
+        # Logging
+        # --------------------------------------------------
         history['train_loss'].append(avg_train_loss)
-        history['val_loss'].append(avg_val_loss)
         history['val_auc'].append(val_auc)
-        history['val_f1'].append(f1)
-        
-        # Print metrics
+
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   ├─ Train Loss: {avg_train_loss:.4f}")
-        print(f"   ├─ Val Loss: {avg_val_loss:.4f}")
         print(f"   ├─ Val AUC: {val_auc:.4f}")
-        print(f"   ├─ Val F1: {f1:.4f}")
-        print(f"   ├─ Val Precision: {precision:.4f}")
-        print(f"   └─ Val Recall: {recall:.4f}")
-        
-        # Save best
+        print(f"   └─ Mean Gap: {gap:.4f}")
+
+        # --------------------------------------------------
+        # Checkpointing
+        # --------------------------------------------------
         is_best = val_auc > best_val_auc
         if is_best:
             best_val_auc = val_auc
             print(f"\n   ✅ New best model! (AUC: {val_auc:.4f})")
-            torch.save({
+            torch.save(
+                {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'val_auc': val_auc,
+                    'gap': gap
+                },
+                os.path.join(save_dir, 'best.pth')
+            )
+
+        torch.save(
+            {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_auc': val_auc,
-                'val_f1': f1
-            }, os.path.join(save_dir, 'best.pth'))
-        
-        # Save latest
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-        }, os.path.join(save_dir, 'latest.pth'))
-        
-        # Step scheduler
+            },
+            os.path.join(save_dir, 'latest.pth')
+        )
+
         scheduler.step()
-    
+
     # Save history
     with open(os.path.join(save_dir, 'history.json'), 'w') as f:
         json.dump(history, f, indent=2)

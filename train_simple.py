@@ -21,7 +21,7 @@ from datetime import datetime
 from hybrid_detection_model import HybridDetectorLite, HybridImageDetector
 from hybrid_dataset import HybridImageDataset
 from prepare_data import prepare_dataset
-from train import FocalLoss
+
 
 
 
@@ -260,14 +260,11 @@ def train_from_folders(
     print(f"   └─ Head LR:     {learning_rate} ({len(head_params)} param groups)")
     
     # Cosine schedule
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs, eta_min=1e-6
-    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='max', factor=0.5, patience=3)
     print(f"✅ Scheduler: CosineAnnealingLR (T_max={num_epochs})")
     
-    # Loss
-    cls_loss_fn = FocalLoss()
-    print("✅ Loss: FocalLoss")
+    
 
     # Mixed precision
     scaler = GradScaler()
@@ -286,13 +283,13 @@ def train_from_folders(
     print("=" * 80)
     print(f"\nStarting training for {num_epochs} epochs...")
     
-    best_val_auc = 0.0
+    best_metric = -1e9
     history = {
-        'train_loss': [],
-        'val_loss': [],
-        'val_auc': [],
-        'val_f1': []
-    }
+    'train_loss': [],
+    'real_mean': [],
+    'hybrid_mean': [],
+    'gap': []}
+
     
     for epoch in range(num_epochs):
         print(f"\n{'='*80}")
@@ -303,161 +300,146 @@ def train_from_folders(
         # Training
         # --------------------------------------------------------------------
         model.train()
-        train_loss = 0
-        
-        pbar = tqdm(train_loader, desc='Training')
+        train_loss = 0.0
+
+        pbar = tqdm(train_loader, desc="Training")
+
         for batch_idx, (rgb, freq, edge_map, labels, masks) in enumerate(pbar):
+
             rgb = rgb.to(device)
             freq = freq.to(device)
             edge_map = edge_map.to(device)
-            labels = labels.to(device)
-            
+            labels = labels.to(device).float()
+
             optimizer.zero_grad()
 
-            # Debug: print shapes once at the very start
-            if batch_idx == 0 and epoch == 0:
-                print(f"\n🔍 DEBUG (first batch, epoch 1 only):")
-                print(f"   RGB:      {rgb.shape}")
-                print(f"   Freq:     {freq.shape}")
-                print(f"   Edge map: {edge_map.shape}")
-                print(f"   Labels:   {labels[:8].cpu().numpy()}")
-                print(f"   Freq mean: {freq.mean():.4f}, Edge mean: {edge_map.mean():.4f}")
-                
-            
             with autocast():
+
                 _, scores = model(rgb, freq, edge_map)
 
-                patch_score   = scores["patch"]
-                texture_score = scores["texture"]
-                energy_score  = scores["energy"]
+                patch   = torch.sigmoid(scores["patch"])
+                texture = torch.sigmoid(scores["texture"])
+                energy  = torch.sigmoid(scores["energy"])
 
-                labels = labels.float()
-
-                # --------------------------------------------------
-                # Aggregate forensic risk score (MAIN SIGNAL)
-                # --------------------------------------------------
-                agg_score = (
-                    0.25 * torch.sigmoid(patch_score) +
-                    0.35 * torch.sigmoid(texture_score) +
-                    0.40 * torch.sigmoid(energy_score)
+                # ---- FINAL RISK SCORE ----
+                risk = (
+                    0.30 * patch +
+                    0.30 * texture +
+                    0.40 * energy
                 )
 
-                # --------------------------------------------------
-                # Pairwise ranking loss (OPTIMIZES AUC)
-                # --------------------------------------------------
-                real_scores   = agg_score[labels == 0]
-                hybrid_scores = agg_score[labels == 1]
+                # ---- SPLIT BY CLASS ----
+                real_risk   = risk[labels == 0]
+                hybrid_risk = risk[labels == 1]
 
-                if len(real_scores) > 0 and len(hybrid_scores) > 0:
-                    rank_loss = torch.relu(
-                        0.15 - (hybrid_scores.mean() - real_scores.mean())
-                    )
-                else:
-                    rank_loss = torch.tensor(0.0, device=agg_score.device)
+                # Safety (should not happen if batch is balanced)
+                if len(real_risk) == 0 or len(hybrid_risk) == 0:
+                    continue
 
-                # --------------------------------------------------
-                # Variance regularization (ANTI-COLLAPSE)
-                # --------------------------------------------------
-                var_loss = torch.relu(0.08 - agg_score.std(unbiased=False))
+                # ---- DISTRIBUTION RANKING LOSS ----
+                # Enforce: mean(hybrid) > mean(real) + margin
+                margin = min(0.30, 0.10 + epoch * 0.01)
+                rank_loss = torch.relu(
+                    margin - (hybrid_risk.mean() - real_risk.mean())
+                )
 
-                # --------------------------------------------------
-                # Final loss (RANKING OBJECTIVE)
-                # --------------------------------------------------
-                loss = rank_loss + 0.2 * var_loss
+                # ---- ANTI-COLLAPSE (SPREAD REGULARIZATION) ----
+                spread_loss = torch.relu(0.05 - risk.std(unbiased=False))
 
-                if batch_idx == 0 and epoch == 0:
+                # ---- FINAL LOSS ----
+                loss = rank_loss + 1.0 * spread_loss
+
+
+                # Debug only once
+                if batch_idx == 0:
                     print(
-                        f"[RANK-DEBUG] mean={agg_score.mean().item():.3f}, "
-                        f"std={agg_score.std(unbiased=False).item():.3f}, "
-                        f"rank_loss={rank_loss.item():.3f}"
+                        f"[RISK-DEBUG] "
+                        f"real_mean={real_risk.mean().item():.3f}, "
+                        f"hybrid_mean={hybrid_risk.mean().item():.3f}, "
+                        f"gap={(hybrid_risk.mean() - real_risk.mean()).item():.3f}, "
+                        f"std={risk.std(unbiased=False).item():.3f}"
                     )
-
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
-            
+
             train_loss += loss.item()
-            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
         avg_train_loss = train_loss / len(train_loader)
+
         
         # --------------------------------------------------------------------
         # Validation
         # --------------------------------------------------------------------
         model.eval()
-        all_probs = []
+
+        all_risk = []
         all_labels = []
 
         with torch.no_grad():
-            for rgb, freq, edge_map, labels, masks in tqdm(val_loader, desc='Validation'):
+            for rgb, freq, edge_map, labels, masks in tqdm(val_loader, desc="Validation"):
+
                 rgb = rgb.to(device)
                 freq = freq.to(device)
                 edge_map = edge_map.to(device)
-                labels = labels.float().to(device)
+                labels = labels.to(device).float()
 
-                # Forward
                 _, scores = model(rgb, freq, edge_map)
 
-                patch_score   = scores["patch"]
-                texture_score = scores["texture"]
-                energy_score  = scores["energy"]
-
-                # --------------------------------------------------
-                # Aggregate forensic risk score (SAME AS TRAINING)
-                # --------------------------------------------------
-                agg_score = (
-                    0.25 * torch.sigmoid(patch_score) +
-                    0.35 * torch.sigmoid(texture_score) +
-                    0.40 * torch.sigmoid(energy_score)
+                risk = (
+                    0.30 * torch.sigmoid(scores["patch"]) +
+                    0.30 * torch.sigmoid(scores["texture"]) +
+                    0.40 * torch.sigmoid(scores["energy"])
                 )
 
-                all_probs.extend(agg_score.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                all_risk.append(risk.cpu())
+                all_labels.append(labels.cpu())
 
-        # --------------------------------------------------
-        # Metrics
-        # --------------------------------------------------
-        all_probs = np.array(all_probs)
-        all_labels = np.array(all_labels)
+        all_risk = torch.cat(all_risk).numpy()
+        all_labels = torch.cat(all_labels).numpy()
 
-        val_auc = roc_auc_score(all_labels, all_probs)
-
-        real_mean   = all_probs[all_labels == 0].mean()
-        hybrid_mean = all_probs[all_labels == 1].mean()
+        real_mean   = all_risk[all_labels == 0].mean()
+        hybrid_mean = all_risk[all_labels == 1].mean()
         gap = hybrid_mean - real_mean
+        risk_std = all_risk.std()
 
         print(
-            f"Real mean={real_mean:.3f} | "
-            f"Hybrid mean={hybrid_mean:.3f} | "
-            f"Gap={gap:.3f}"
+            f"Validation Risk Stats → "
+            f"Real mean: {real_mean:.3f} | "
+            f"Hybrid mean: {hybrid_mean:.3f} | "
+            f"Gap: {gap:.3f} | "
+            f"STD: {risk_std:.3f}"
         )
 
         # --------------------------------------------------
         # Logging
         # --------------------------------------------------
         history['train_loss'].append(avg_train_loss)
-        history['val_auc'].append(val_auc)
+        history['real_mean'].append(real_mean)
+        history['hybrid_mean'].append(hybrid_mean)
+        history['gap'].append(gap)
+       
 
         print(f"\n📊 Epoch {epoch + 1} Results:")
         print(f"   ├─ Train Loss: {avg_train_loss:.4f}")
-        print(f"   ├─ Val AUC: {val_auc:.4f}")
         print(f"   └─ Mean Gap: {gap:.4f}")
 
         # --------------------------------------------------
         # Checkpointing
         # --------------------------------------------------
-        is_best = val_auc > best_val_auc
+        metric = gap  # or gap - 0.5 * std_penalty
+        is_best = metric > best_metric
         if is_best:
-            best_val_auc = val_auc
-            print(f"\n   ✅ New best model! (AUC: {val_auc:.4f})")
+            best_metric = metric
+            print(f"\n   ✅ New best model! (AUC: {best_metric:.4f})")
             torch.save(
                 {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
-                    'val_auc': val_auc,
                     'gap': gap
                 },
                 os.path.join(save_dir, 'best.pth')
@@ -471,7 +453,7 @@ def train_from_folders(
             os.path.join(save_dir, 'latest.pth')
         )
 
-        scheduler.step()
+        scheduler.step(gap)
 
     # Save history
     with open(os.path.join(save_dir, 'history.json'), 'w') as f:

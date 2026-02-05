@@ -345,6 +345,9 @@ def train_from_folders(
 
                 _, scores = model(rgb, freq, edge_map)
 
+                # --------------------------------------------------
+                # Risk aggregation
+                # --------------------------------------------------
                 risk = (
                     0.30 * torch.sigmoid(scores["patch"]) +
                     0.30 * torch.sigmoid(scores["texture"]) +
@@ -354,13 +357,20 @@ def train_from_folders(
                 real_risk   = risk[labels == 0]
                 hybrid_risk = risk[labels == 1]
 
-                if len(real_risk) == 0 or len(hybrid_risk) == 0:
+                # Safety: skip invalid batches
+                if real_risk.numel() == 0 or hybrid_risk.numel() == 0:
                     continue
 
-                # 🔥 Top-tail ranking (distribution-aware, no hard threshold)
-                k = max(1, int(0.25 * len(real_risk)))  # top 25%
+                # --------------------------------------------------
+                # 🔥 Top-tail ranking (distribution-aware, SAFE)
+                # --------------------------------------------------
+                # Top 25% from EACH class, capped safely
+                k_real   = max(1, int(0.25 * real_risk.numel()))
+                k_hybrid = max(1, int(0.25 * hybrid_risk.numel()))
 
-                real_top   = torch.topk(real_risk, k=k, largest=True).values
+                k = min(k_real, k_hybrid)
+
+                real_top   = torch.topk(real_risk,   k=k, largest=True).values
                 hybrid_top = torch.topk(hybrid_risk, k=k, largest=True).values
 
                 margin = 0.20
@@ -368,20 +378,29 @@ def train_from_folders(
                     margin - (hybrid_top.mean() - real_top.mean())
                 )
 
-                # Anti-collapse
+                # --------------------------------------------------
+                # 🛡 Anti-collapse (keep uncertainty alive)
+                # --------------------------------------------------
                 spread_loss = torch.relu(0.05 - risk.std(unbiased=False))
 
+                # --------------------------------------------------
+                # Final loss
+                # --------------------------------------------------
                 loss = rank_loss + 0.5 * spread_loss
 
-                # Debug (batch 0 only)
+                # Debug (only once per epoch)
                 if batch_idx == 0:
                     print(
                         f"[RISK-DEBUG] "
                         f"real_mean={real_risk.mean().item():.3f}, "
                         f"hybrid_mean={hybrid_risk.mean().item():.3f}, "
                         f"gap={(hybrid_risk.mean() - real_risk.mean()).item():.3f}, "
-                        f"std={risk.std(unbiased=False).item():.3f}"
+                        f"std={risk.std(unbiased=False).item():.3f}, "
+                        f"k={k}"
                     )
+
+
+                
 
 
             scaler.scale(loss).backward()

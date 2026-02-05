@@ -258,9 +258,6 @@ def train_from_folders(
     print(f"   └─ Trainable parameters: {trainable_params:,}")
 
 
-
-
-    
     # ========================================================================
     # Step 5: Optimizer with differential learning rates
     # ========================================================================
@@ -398,10 +395,6 @@ def train_from_folders(
                         f"std={risk.std(unbiased=False).item():.3f}, "
                         f"k={k}"
                     )
-
-
-                
-
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)

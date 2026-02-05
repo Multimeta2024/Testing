@@ -216,22 +216,44 @@ def train_from_folders(
     print("\n" + "=" * 80)
     print("STEP 4: INITIALIZING MODEL")
     print("=" * 80)
-    
+
     if not torch.cuda.is_available() and device == 'cuda':
         print("⚠️  CUDA not available, using CPU")
         device = 'cpu'
-    
+
+    # -------- 1️⃣ CREATE MODEL --------
     if use_lite_model:
         model = HybridDetectorLite().to(device)
         print("✅ Using HybridDetectorLite")
     else:
         model = HybridImageDetector().to(device)
         print("✅ Using HybridImageDetector (Full)")
-    
+
+    # -------- 2️⃣ LOAD BEST CHECKPOINT (if exists) --------
+    best_ckpt_path = os.path.join(save_dir, experiment_name, "best.pth")
+
+    if os.path.exists(best_ckpt_path):
+        ckpt = torch.load(best_ckpt_path, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        print(f"✅ Loaded best checkpoint from: {best_ckpt_path}")
+    else:
+        print("⚠️ No checkpoint found — training from scratch")
+
+    # -------- 3️⃣ FREEZE RGB BACKBONE (IMPORTANT) --------
+    for name, param in model.named_parameters():
+        if "rgb_encoder" in name:
+            param.requires_grad = False
+
+    print("🔒 RGB backbone frozen — training heads only")
+
+    # -------- 4️⃣ PARAMETER STATS --------
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
     print(f"   ├─ Total parameters: {total_params:,}")
     print(f"   └─ Trainable parameters: {trainable_params:,}")
+
+
     
     # ========================================================================
     # Step 5: Optimizer with differential learning rates
@@ -329,43 +351,23 @@ def train_from_folders(
                 if len(real_risk) == 0 or len(hybrid_risk) == 0:
                     continue
 
-                # 1️⃣ Tail ranking (only if confident)
-                tail_threshold = 0.70
-                hard_real   = real_risk[real_risk > tail_threshold]
-                hard_hybrid = hybrid_risk[hybrid_risk > tail_threshold]
+                # 🔥 Top-tail ranking (distribution-aware, no hard threshold)
+                k = max(1, int(0.25 * len(real_risk)))  # top 25%
 
-                if len(hard_real) > 0 and len(hard_hybrid) > 0:
-                    tail_rank_loss = torch.relu(
-                        0.15 - (hard_hybrid.mean() - hard_real.mean())
-                    )
-                else:
-                    tail_rank_loss = torch.tensor(0.0, device=risk.device)
+                real_top   = torch.topk(real_risk, k=k, largest=True).values
+                hybrid_top = torch.topk(hybrid_risk, k=k, largest=True).values
 
-                # 2️⃣ Weak global ranking
-                global_rank_loss = torch.relu(
-                    0.05 - (hybrid_risk.mean() - real_risk.mean())
+                margin = 0.20
+                rank_loss = torch.relu(
+                    margin - (hybrid_top.mean() - real_top.mean())
                 )
 
-                # 3️⃣ Spread (anti-collapse)
-                spread_loss = torch.relu(0.10 - risk.std(unbiased=False))
+                # Anti-collapse
+                spread_loss = torch.relu(0.05 - risk.std(unbiased=False))
 
-                # 4️⃣ Mid-risk entropy nudge (break 0.50 spike)
-                mid_mask = (risk > 0.45) & (risk < 0.55)
-                if mid_mask.any():
-                    entropy_nudge = -(
-                        risk[mid_mask] * torch.log(risk[mid_mask] + 1e-6) +
-                        (1 - risk[mid_mask]) * torch.log(1 - risk[mid_mask] + 1e-6)
-                    ).mean()
-                else:
-                    entropy_nudge = torch.tensor(0.0, device=risk.device)
+                loss = rank_loss + 0.5 * spread_loss
 
-                loss = (
-                    1.0 * tail_rank_loss +
-                    0.3 * global_rank_loss +
-                    0.3 * spread_loss +
-                    0.1 * entropy_nudge)
-
-                # Debug only once
+                # Debug (batch 0 only)
                 if batch_idx == 0:
                     print(
                         f"[RISK-DEBUG] "
@@ -374,6 +376,7 @@ def train_from_folders(
                         f"gap={(hybrid_risk.mean() - real_risk.mean()).item():.3f}, "
                         f"std={risk.std(unbiased=False).item():.3f}"
                     )
+
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -436,7 +439,8 @@ def train_from_folders(
         history['train_loss'].append(float(avg_train_loss))
         history['real_mean'].append(real_mean)
         history['hybrid_mean'].append(hybrid_mean)
-        history['mean_gap'].append(float(gap))
+        history['gap'].append(float(gap))
+
        
 
         print(f"\n📊 Epoch {epoch + 1} Results:")

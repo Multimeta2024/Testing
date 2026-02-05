@@ -317,38 +317,53 @@ def train_from_folders(
 
                 _, scores = model(rgb, freq, edge_map)
 
-                patch   = torch.sigmoid(scores["patch"])
-                texture = torch.sigmoid(scores["texture"])
-                energy  = torch.sigmoid(scores["energy"])
-
-                # ---- FINAL RISK SCORE ----
                 risk = (
-                    0.30 * patch +
-                    0.30 * texture +
-                    0.40 * energy
+                    0.30 * torch.sigmoid(scores["patch"]) +
+                    0.30 * torch.sigmoid(scores["texture"]) +
+                    0.40 * torch.sigmoid(scores["energy"])
                 )
 
-                # ---- SPLIT BY CLASS ----
                 real_risk   = risk[labels == 0]
                 hybrid_risk = risk[labels == 1]
 
-                # Safety (should not happen if batch is balanced)
                 if len(real_risk) == 0 or len(hybrid_risk) == 0:
                     continue
 
-                # ---- DISTRIBUTION RANKING LOSS ----
-                # Enforce: mean(hybrid) > mean(real) + margin
-                margin = min(0.30, 0.10 + epoch * 0.01)
-                rank_loss = torch.relu(
-                    margin - (hybrid_risk.mean() - real_risk.mean())
+                # 1️⃣ Tail ranking (only if confident)
+                tail_threshold = 0.70
+                hard_real   = real_risk[real_risk > tail_threshold]
+                hard_hybrid = hybrid_risk[hybrid_risk > tail_threshold]
+
+                if len(hard_real) > 0 and len(hard_hybrid) > 0:
+                    tail_rank_loss = torch.relu(
+                        0.15 - (hard_hybrid.mean() - hard_real.mean())
+                    )
+                else:
+                    tail_rank_loss = torch.tensor(0.0, device=risk.device)
+
+                # 2️⃣ Weak global ranking
+                global_rank_loss = torch.relu(
+                    0.05 - (hybrid_risk.mean() - real_risk.mean())
                 )
 
-                # ---- ANTI-COLLAPSE (SPREAD REGULARIZATION) ----
-                spread_loss = torch.relu(0.05 - risk.std(unbiased=False))
+                # 3️⃣ Spread (anti-collapse)
+                spread_loss = torch.relu(0.10 - risk.std(unbiased=False))
 
-                # ---- FINAL LOSS ----
-                loss = rank_loss + 1.0 * spread_loss
+                # 4️⃣ Mid-risk entropy nudge (break 0.50 spike)
+                mid_mask = (risk > 0.45) & (risk < 0.55)
+                if mid_mask.any():
+                    entropy_nudge = -(
+                        risk[mid_mask] * torch.log(risk[mid_mask] + 1e-6) +
+                        (1 - risk[mid_mask]) * torch.log(1 - risk[mid_mask] + 1e-6)
+                    ).mean()
+                else:
+                    entropy_nudge = torch.tensor(0.0, device=risk.device)
 
+                loss = (
+                    1.0 * tail_rank_loss +
+                    0.3 * global_rank_loss +
+                    0.3 * spread_loss +
+                    0.1 * entropy_nudge)
 
                 # Debug only once
                 if batch_idx == 0:
@@ -418,10 +433,10 @@ def train_from_folders(
         # --------------------------------------------------
         # Logging
         # --------------------------------------------------
-        history['train_loss'].append(avg_train_loss)
+        history['train_loss'].append(float(avg_train_loss))
         history['real_mean'].append(real_mean)
         history['hybrid_mean'].append(hybrid_mean)
-        history['gap'].append(gap)
+        history['mean_gap'].append(float(gap))
        
 
         print(f"\n📊 Epoch {epoch + 1} Results:")
@@ -435,7 +450,7 @@ def train_from_folders(
         is_best = metric > best_metric
         if is_best:
             best_metric = metric
-            print(f"\n   ✅ New best model! (AUC: {best_metric:.4f})")
+            print(f"\n   ✅ New best model! (mean_gap: {best_metric:.4f})")
             torch.save(
                 {
                     'epoch': epoch,
@@ -462,7 +477,7 @@ def train_from_folders(
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE!")
     print("=" * 80)
-    print(f"\n✅ Best Validation AUC: {best_val_auc:.4f}")
+    print(f"\n✅ Best mean_gap: {best_metric:.4f}")
     print(f"✅ Model saved to: {save_dir}/best.pth")
     print(f"✅ Training history saved to: {save_dir}/history.json")
     print("\n" + "=" * 80)

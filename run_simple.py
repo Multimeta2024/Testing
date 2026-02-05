@@ -16,7 +16,7 @@ history, model_path = train_from_folders(
     use_lite_model=True,
     use_localization=False,
 
-    num_epochs=20,
+    num_epochs=12,
     batch_size=16,
     learning_rate=3e-4,
 

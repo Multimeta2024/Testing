@@ -236,7 +236,7 @@ def train_from_folders(
         ckpt = torch.load(
             best_ckpt_path,
             map_location=device,
-            weights_only=False   # ✅ REQUIRED ON KAGGLE
+            weights_only=False   # ✅ pREQUIRED ON KAGGLE
         )
         model.load_state_dict(ckpt["model_state_dict"], strict=False)
         print(f"✅ Loaded best checkpoint from: {best_ckpt_path}")

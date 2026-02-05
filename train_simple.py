@@ -217,11 +217,15 @@ def train_from_folders(
     print("STEP 4: INITIALIZING MODEL")
     print("=" * 80)
 
+    import numpy as np
+    from torch.serialization import add_safe_globals
+    add_safe_globals([np.core.multiarray.scalar])
+
     if not torch.cuda.is_available() and device == 'cuda':
-        print("⚠️  CUDA not available, using CPU")
+        print("⚠️ CUDA not available, using CPU")
         device = 'cpu'
 
-    # -------- 1️⃣ CREATE MODEL --------
+    # 1️⃣ Create model
     if use_lite_model:
         model = HybridDetectorLite().to(device)
         print("✅ Using HybridDetectorLite")
@@ -229,29 +233,34 @@ def train_from_folders(
         model = HybridImageDetector().to(device)
         print("✅ Using HybridImageDetector (Full)")
 
-    # -------- 2️⃣ LOAD BEST CHECKPOINT (if exists) --------
+    # 2️⃣ Load best checkpoint
     best_ckpt_path = os.path.join(save_dir, experiment_name, "best.pth")
 
     if os.path.exists(best_ckpt_path):
-        ckpt = torch.load(best_ckpt_path, map_location=device)
+        ckpt = torch.load(
+            best_ckpt_path,
+            map_location=device,
+            weights_only=True
+        )
         model.load_state_dict(ckpt["model_state_dict"], strict=False)
         print(f"✅ Loaded best checkpoint from: {best_ckpt_path}")
     else:
         print("⚠️ No checkpoint found — training from scratch")
 
-    # -------- 3️⃣ FREEZE RGB BACKBONE (IMPORTANT) --------
+    # 3️⃣ Freeze RGB backbone
     for name, param in model.named_parameters():
         if "rgb_encoder" in name:
             param.requires_grad = False
 
-    print("🔒 RGB backbone frozen — training heads only")
+    print("🔒 RGB backbone frozen")
 
-    # -------- 4️⃣ PARAMETER STATS --------
+    # 4️⃣ Stats
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     print(f"   ├─ Total parameters: {total_params:,}")
     print(f"   └─ Trainable parameters: {trainable_params:,}")
+
 
 
     

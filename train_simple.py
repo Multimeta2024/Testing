@@ -354,36 +354,27 @@ def train_from_folders(
                 real_risk   = risk[labels == 0]
                 hybrid_risk = risk[labels == 1]
 
-                # Safety: skip invalid batches
-                if real_risk.numel() == 0 or hybrid_risk.numel() == 0:
+                if len(real_risk) < 4 or len(hybrid_risk) < 4:
                     continue
 
-                # --------------------------------------------------
-                # 🔥 Top-tail ranking (distribution-aware, SAFE)
-                # --------------------------------------------------
-                # Top 25% from EACH class, capped safely
-                k_real   = max(1, int(0.25 * real_risk.numel()))
-                k_hybrid = max(1, int(0.25 * hybrid_risk.numel()))
+                # Use TOP 30%, but minimum 4 samples
+                k_real   = max(4, int(0.3 * len(real_risk)))
+                k_hybrid = max(4, int(0.3 * len(hybrid_risk)))
 
-                k = min(k_real, k_hybrid)
+                real_top   = torch.topk(real_risk, k=k_real, largest=True).values
+                hybrid_top = torch.topk(hybrid_risk, k=k_hybrid, largest=True).values
 
-                real_top   = torch.topk(real_risk,   k=k, largest=True).values
-                hybrid_top = torch.topk(hybrid_risk, k=k, largest=True).values
-
-                margin = 0.20
-                rank_loss = torch.relu(
+                # STRONGER asymmetric margin
+                margin = 0.25
+                tail_rank_loss = torch.relu(
                     margin - (hybrid_top.mean() - real_top.mean())
                 )
 
-                # --------------------------------------------------
-                # 🛡 Anti-collapse (keep uncertainty alive)
-                # --------------------------------------------------
-                spread_loss = torch.relu(0.05 - risk.std(unbiased=False))
+                # Anti-collapse (keep uncertainty)
+                spread_loss = torch.relu(0.08 - risk.std(unbiased=False))
 
-                # --------------------------------------------------
-                # Final loss
-                # --------------------------------------------------
-                loss = rank_loss + 0.5 * spread_loss
+                loss = tail_rank_loss + 0.4 * spread_loss
+
 
                 # Debug (only once per epoch)
                 if batch_idx == 0:

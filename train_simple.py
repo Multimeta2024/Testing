@@ -230,7 +230,7 @@ def train_from_folders(
         print("✅ Using HybridImageDetector (Full)")
 
     # 2️⃣ Load best checkpoint (KAGGLE-SAFE)
-    best_ckpt_path = os.path.join(save_dir, experiment_name, "best.pth")
+    best_ckpt_path = "/kaggle/input/after-tunr/tensorflow2/default/1/hybrid_detection/best.pth"
 
     if os.path.exists(best_ckpt_path):
         ckpt = torch.load(

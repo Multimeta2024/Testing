@@ -16,9 +16,9 @@ history, model_path = train_from_folders(
     use_lite_model=True,
     use_localization=False,
 
-    num_epochs=10,
+    num_epochs=6,
     batch_size=16,
-    learning_rate=3e-4,
+    learning_rate=1e-4,
 
     device='cuda' if torch.cuda.is_available() else 'cpu'
 )
